@@ -63,7 +63,7 @@ def _load_or_create_doctor_token():
         token = secrets.token_urlsafe(48)
         fd = os.open(_DOCTOR_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as token_file:
-            token_file.write(token + "\\n")
+            token_file.write(token + "\n")
         return token
     except OSError as exc:
         print(f"[WARN] ZMT Doctor token unavailable: {exc}")
