@@ -65,11 +65,15 @@ def insert_records(records):
         for r in records:
             try:
                 cursor.execute("""
-                INSERT OR IGNORE INTO emails (
+                INSERT INTO emails (
                     message_id, queue_id, timestamp, auth_domain, auth_username,
                     identity, sender, recipient, main_class, subject, status,
                     relay, reason, size
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(queue_id, recipient, status) DO UPDATE SET
+                    subject = excluded.subject
+                WHERE COALESCE(emails.subject, '') = ''
+                  AND COALESCE(excluded.subject, '') <> ''
                 """, (
                     r.get("message_id") or r.get("queue_id", ""),
                     r.get("queue_id", ""),
