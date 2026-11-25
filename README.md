@@ -31,9 +31,13 @@ systemctl restart zimbra-mail-tracker    # Restart service
 zmt-update --git                         # Update dari GitHub
 zmt-update --status                      # Cek versi & backup
 zmt-update --rollback                    # Kembalikan versi sebelumnya
+zmt-doctor                                # Diagnostik VPS dan kirim hasil ke dashboard
 ```
 
 Konfigurasi tersimpan di `/etc/zimbra-mail-tracker/config.json`.
+
+### ZMT Doctor
+Jalankan `sudo zmt-doctor` di VPS untuk memeriksa status Zimbra, Amavis, service ZMT, log Subject, database, dan disk. Ringkasan dikirim melalui loopback ke dashboard dan ditampilkan pada panel **ZMT Doctor / System Health**. Script bersifat read-only, tidak mengubah konfigurasi, dan tidak me-restart service. Token agen disimpan otomatis di `/etc/zimbra-mail-tracker/doctor.token` dengan permission root-only.
 
 ## 💻 Menjalankan Manual (Windows / Lokal)
 ```bash
