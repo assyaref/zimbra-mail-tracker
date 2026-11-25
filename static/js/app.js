@@ -650,5 +650,129 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Initial load
+  initRadar();
+  initVitals();
   load();
 });
+
+// ── Radar & Vitals Widgets (ZIMMON Ops Style) ─────────────────────────────
+let radarAngle = 0;
+const radarBlips = [
+  { r: 0.35, a: 0.8, status: 'active' },
+  { r: 0.65, a: 1.5, status: 'active' },
+  { r: 0.45, a: 2.3, status: 'active' },
+  { r: 0.80, a: 3.1, status: 'active' },
+  { r: 0.55, a: 4.0, status: 'active' },
+  { r: 0.25, a: 4.7, status: 'active' },
+  { r: 0.70, a: 5.4, status: 'active' },
+  { r: 0.85, a: 5.9, status: 'active' },
+  { r: 0.50, a: 0.2, status: 'down' }
+];
+
+function initRadar() {
+  const canvas = document.getElementById('radar-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cx = 80, cy = 80, radius = 70;
+
+  function draw() {
+    ctx.clearRect(0, 0, 160, 160);
+
+    // Circles
+    ctx.strokeStyle = 'rgba(0, 255, 65, 0.25)';
+    ctx.lineWidth = 1;
+    [0.33, 0.66, 1.0].forEach(p => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * p, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    // Crosshairs
+    ctx.beginPath();
+    ctx.moveTo(cx - radius, cy); ctx.lineTo(cx + radius, cy);
+    ctx.moveTo(cx, cy - radius); ctx.lineTo(cx, cy + radius);
+    ctx.stroke();
+
+    // Sweep cone
+    radarAngle = (radarAngle + 0.04) % (Math.PI * 2);
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    grad.addColorStop(0, 'rgba(0, 255, 65, 0.05)');
+    grad.addColorStop(1, 'rgba(0, 255, 65, 0.35)');
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius, radarAngle - 0.45, radarAngle);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.restore();
+
+    // Blips
+    radarBlips.forEach(b => {
+      const bx = cx + Math.cos(b.a) * (radius * b.r);
+      const by = cy + Math.sin(b.a) * (radius * b.r);
+      ctx.beginPath();
+      ctx.arc(bx, by, 3, 0, Math.PI * 2);
+      ctx.fillStyle = b.status === 'down' ? '#ff2020' : '#00ff41';
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.shadowBlur = 6;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    });
+
+    requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+const vitalsHistory = [20, 22, 28, 18, 35, 24, 26, 32, 20, 19, 23, 27, 30, 21, 24];
+function initVitals() {
+  async function update() {
+    try {
+      const res = await fetch('/api/vitals');
+      if (res.ok) {
+        const d = await res.json();
+        document.getElementById('txt-cpu').textContent = `${d.cpu}%`;
+        document.getElementById('bar-cpu').style.width = `${Math.min(100, d.cpu)}%`;
+        document.getElementById('vitals-cpu-val').textContent = `CPU ${d.cpu}% · LOAD`;
+        document.getElementById('txt-ram').textContent = `${d.ram_used}/${d.ram_total}`;
+        document.getElementById('bar-ram').style.width = `${d.ram_pct}%`;
+        document.getElementById('txt-disk').textContent = d.disk_free;
+        document.getElementById('bar-disk').style.width = `${d.disk_pct}%`;
+        document.getElementById('txt-swap').textContent = `${d.swap_used}/${d.swap_total}`;
+        document.getElementById('bar-swap').style.width = `${d.swap_pct}%`;
+        vitalsHistory.push(d.cpu);
+        if (vitalsHistory.length > 25) vitalsHistory.shift();
+      }
+    } catch (_) {}
+    drawSparkline();
+  }
+
+  function drawSparkline() {
+    const c = document.getElementById('vitals-sparkline');
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    c.width = c.offsetWidth;
+    c.height = 50;
+    const w = c.width, h = c.height;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.strokeStyle = '#00ff41';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#00ff41';
+    ctx.shadowBlur = 4;
+    ctx.beginPath();
+    const step = w / (vitalsHistory.length - 1);
+    vitalsHistory.forEach((val, i) => {
+      const y = h - (val / 100) * (h - 8) - 4;
+      if (i === 0) ctx.moveTo(0, y);
+      else ctx.lineTo(i * step, y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  update();
+  setInterval(update, 5000);
+}
