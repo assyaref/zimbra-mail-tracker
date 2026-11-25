@@ -1,0 +1,24 @@
+name: Validate ZMT
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Check shell scripts
+        run: bash -n install.sh update.sh run.sh zmt-doctor.sh
+      - name: Compile Python modules
+        run: python -m py_compile app.py config.py db.py parser.py server.py
+      - name: Check dashboard JavaScript
+        run: node --check static/js/app.js
