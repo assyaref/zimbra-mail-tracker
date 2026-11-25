@@ -144,13 +144,25 @@ else
   SCHEME="http"
 fi
 URL="$SCHEME://127.0.0.1:$PORT/api/doctor/report"
-if ! curl --silent --show-error --fail --insecure --connect-timeout 5 \
-  -H "X-ZMT-Doctor-Token: $TOKEN" -H "Content-Type: application/json" \
-  --data-binary "@$REPORT" "$URL"; then
-  echo
-  echo "[ERROR] Gagal mengirim laporan ke ZMT ($URL)."
-  echo "Pastikan zimbra-mail-tracker aktif dan sudah memakai versi ZMT Doctor."
-  exit 1
-fi
+python3 - "$URL" "$REPORT" "$TOKEN_FILE" <<'PY'
+import json, ssl, sys, urllib.error, urllib.request
+url, report_path, token_path = sys.argv[1:]
+with open(report_path, "rb") as f:
+    payload = f.read()
+with open(token_path, "r", encoding="utf-8") as f:
+    token = f.read().strip()
+request = urllib.request.Request(
+    url, data=payload, method="POST",
+    headers={"Content-Type":"application/json", "X-ZMT-Doctor-Token":token}
+)
+context = ssl._create_unverified_context() if url.startswith("https://") else None
+try:
+    with urllib.request.urlopen(request, context=context, timeout=8) as response:
+        print(response.read().decode("utf-8", errors="replace"))
+except Exception as exc:
+    print(f"[ERROR] Gagal mengirim laporan ke ZMT ({url}): {exc}", file=sys.stderr)
+    print("Pastikan service zimbra-mail-tracker aktif dan sudah memakai versi ZMT Doctor.", file=sys.stderr)
+    sys.exit(1)
+PY
 echo
 echo "[OK] Laporan berhasil dikirim. Buka dashboard ZMT → ZMT DOCTOR."
