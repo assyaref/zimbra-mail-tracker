@@ -1,8 +1,7 @@
 """
 Zimbra Mail Log Parser
-Parsing log file Zimbra (maillog/mail.log) dengan field lengkap:
-Message ID, Timestamp, Auth Domain, Auth Username, Identity,
-Sender, Recipient, Main Class (spam), Subject, Status
+Streaming parser yang membaca SEMUA baris log tanpa beban memory.
+Mendukung plain text log dan gzip (.gz) log rotasi.
 """
 
 import re
@@ -11,75 +10,62 @@ import gzip
 from datetime import datetime
 from collections import defaultdict
 
-# ─── Regex Patterns ───────────────────────────────────────────────────────────
-
-# postfix/smtpd: client auth (SASL) → auth_username & auth_domain
 RE_AUTH = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"postfix/smtpd\[\d+\]:\s+(?P<queue_id>\w+): client=\S+"
     r"(?:,\s*sasl_username=(?P<auth_user>\S+))?"
 )
 
-# postfix/cleanup: message-id header
 RE_MSGID = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"postfix/cleanup\[\d+\]:\s+(?P<queue_id>\w+): message-id=<(?P<message_id>[^>]*)>"
 )
 
-# postfix/qmgr or pickup: from + size
 RE_FROM = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"postfix/(?:qmgr|pickup)\[\d+\]:\s+(?P<queue_id>\w+): "
     r"from=<(?P<from>[^>]*)>,\s*size=(?P<size>\d+)"
 )
 
-# postfix/smtp (external) → sent
 RE_SENT = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"postfix/smtp\[\d+\]:\s+(?P<queue_id>\w+): "
     r"to=<(?P<to>[^>]+)>, relay=(?P<relay>[^,]+),.*?status=sent"
 )
 
-# postfix/lmtp (internal delivery) → delivered
 RE_DELIVERED = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"postfix/lmtp\[\d+\]:\s+(?P<queue_id>\w+): "
     r"to=<(?P<to>[^>]+)>, relay=(?P<relay>[^,]+),.*?status=sent"
 )
 
-# bounced
 RE_BOUNCED = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"postfix/\S+\[\d+\]:\s+(?P<queue_id>\w+): "
     r"to=<(?P<to>[^>]+)>,.*?status=bounced.*?\((?P<reason>[^)]+)\)"
 )
 
-# deferred
 RE_DEFERRED = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"postfix/\S+\[\d+\]:\s+(?P<queue_id>\w+): "
     r"to=<(?P<to>[^>]+)>,.*?status=deferred.*?\((?P<reason>[^)]+)\)"
 )
 
-# amavis spam classification
 RE_SPAM = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"amavis\[\d+\]:\s+.*?(?P<queue_id>\w{10,}): "
     r".*?Hits:\s*(?P<hits>[\d.\-]+).*?tag2=(?P<tag2>[\d.\-]+).*?kill=(?P<kill>[\d.\-]+)"
 )
 
-# amavis subject line
 RE_SUBJECT_AMAVIS = re.compile(
     r"(?P<month>\w+)\s+(?P<day>\d+)\s+(?P<time>[\d:]+)\s+\S+\s+"
     r"amavis\[\d+\]:\s+.*?Subject:\s*(?P<subject>.+)"
 )
 
-# MONTH map
 MONTH_MAP = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
     "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
 }
-
 
 def _parse_ts(month_str, day_str, time_str, year=None):
     if year is None:
@@ -92,62 +78,26 @@ def _parse_ts(month_str, day_str, time_str, year=None):
     except Exception:
         return None
 
-
 def _extract_domain(email: str) -> str:
-    """Ambil domain dari email address."""
     if "@" in email:
         return email.split("@", 1)[1]
     return ""
 
-
-def _read_last_lines(filepath: str, max_lines: int = 25000):
-    """Membaca N baris terakhir dari file secara cepat (tail)."""
-    if filepath.endswith(".gz"):
-        lines = []
-        try:
-            with gzip.open(filepath, "rt", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    lines.append(line)
-                    if len(lines) > max_lines:
-                        lines.pop(0)
-        except Exception:
-            pass
-        return lines
-
-    # Untuk file plain text .log biasa (sangat cepat via seek byte dari belakang)
-    lines = []
-    try:
-        with open(filepath, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            buffer = bytearray()
-            pointer = f.tell()
-            block_size = 65536
-
-            while pointer > 0 and len(lines) < max_lines:
-                read_size = min(pointer, block_size)
-                pointer -= read_size
-                f.seek(pointer)
-                chunk = f.read(read_size)
-                buffer = chunk + buffer
-                split_lines = buffer.split(b"\n")
-                buffer = split_lines[0]
-                lines = [l.decode("utf-8", errors="ignore") for l in split_lines[1:]] + lines
-
-            if buffer and len(lines) < max_lines:
-                lines.insert(0, buffer.decode("utf-8", errors="ignore"))
-    except Exception:
-        # Fallback reading
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()[-max_lines:]
-
-    return lines[-max_lines:]
-
-
-def parse_log_file(filepath: str, max_lines: int = 25000) -> list:
+def stream_parse_log(filepath: str, start_offset: int = 0, batch_size: int = 1000):
     """
-    Parse log Zimbra secara efisien mengambil N baris terbaru.
+    Generator streaming log parser.
+    Membaca baris demi baris dari start_offset dan yield batch hasil setiap batch_size.
+    Mengembalikan (batch_records, new_offset).
     """
-    queue_data: dict = defaultdict(lambda: {
+    is_gz = filepath.endswith(".gz")
+    if is_gz:
+        f = gzip.open(filepath, "rt", encoding="utf-8", errors="ignore")
+    else:
+        f = open(filepath, "r", encoding="utf-8", errors="ignore")
+        if start_offset > 0:
+            f.seek(start_offset)
+
+    queue_data = defaultdict(lambda: {
         "message_id": "",
         "queue_id": "",
         "timestamp": None,
@@ -158,130 +108,133 @@ def parse_log_file(filepath: str, max_lines: int = 25000) -> list:
         "size": 0,
         "subject": "",
         "main_class": "not-spam",
-        "spam_hits": None,
         "recipients": [],
     })
 
-    raw_lines = _read_last_lines(filepath, max_lines=max_lines)
+    records_batch = []
+    line_count = 0
 
-    for line in raw_lines:
-        if "postfix/" not in line and "amavis[" not in line:
-            continue
-        line = line.rstrip()
+    try:
+        for line in f:
+            line_count += 1
+            if "postfix/" not in line and "amavis[" not in line:
+                continue
 
-        # Message-ID
-        m = RE_MSGID.search(line)
-        if m:
-            qid = m.group("queue_id")
-            queue_data[qid]["queue_id"] = qid
-            queue_data[qid]["message_id"] = m.group("message_id")
-            continue
+            m = RE_MSGID.search(line)
+            if m:
+                qid = m.group("queue_id")
+                queue_data[qid]["queue_id"] = qid
+                queue_data[qid]["message_id"] = m.group("message_id")
+                continue
 
-        # Auth (SASL)
-        m = RE_AUTH.search(line)
-        if m and m.group("auth_user"):
-            qid = m.group("queue_id")
-            auth_user = m.group("auth_user")
-            queue_data[qid]["auth_username"] = auth_user
-            queue_data[qid]["auth_domain"] = _extract_domain(auth_user)
-            if not queue_data[qid]["timestamp"]:
-                ts = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
-                queue_data[qid]["timestamp"] = ts
-            continue
+            m = RE_AUTH.search(line)
+            if m and m.group("auth_user"):
+                qid = m.group("queue_id")
+                auth_user = m.group("auth_user")
+                queue_data[qid]["auth_username"] = auth_user
+                queue_data[qid]["auth_domain"] = _extract_domain(auth_user)
+                if not queue_data[qid]["timestamp"]:
+                    queue_data[qid]["timestamp"] = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
+                continue
 
-        # FROM + size
-        m = RE_FROM.search(line)
-        if m:
-            qid = m.group("queue_id")
-            sender = m.group("from")
-            queue_data[qid]["queue_id"] = qid
-            queue_data[qid]["from"] = sender
-            queue_data[qid]["size"] = int(m.group("size"))
-            # identity = sender kalau belum ada auth_username
-            if not queue_data[qid]["identity"]:
-                queue_data[qid]["identity"] = sender
-            if not queue_data[qid]["timestamp"]:
-                ts = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
-                queue_data[qid]["timestamp"] = ts
-            # auth_domain dari sender kalau belum ada
-            if not queue_data[qid]["auth_domain"]:
-                queue_data[qid]["auth_domain"] = _extract_domain(sender)
-            continue
+            m = RE_FROM.search(line)
+            if m:
+                qid = m.group("queue_id")
+                sender = m.group("from")
+                queue_data[qid]["queue_id"] = qid
+                queue_data[qid]["from"] = sender
+                queue_data[qid]["size"] = int(m.group("size"))
+                if not queue_data[qid]["identity"]:
+                    queue_data[qid]["identity"] = sender
+                if not queue_data[qid]["timestamp"]:
+                    queue_data[qid]["timestamp"] = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
+                if not queue_data[qid]["auth_domain"]:
+                    queue_data[qid]["auth_domain"] = _extract_domain(sender)
+                continue
 
-        # SENT (external)
-        m = RE_SENT.search(line)
-        if m:
-            qid = m.group("queue_id")
-            queue_data[qid]["recipients"].append({
-                "to": m.group("to"),
-                "status": "sent",
-                "relay": m.group("relay"),
-                "reason": "",
-            })
-            continue
+            m = RE_SENT.search(line)
+            if m:
+                qid = m.group("queue_id")
+                queue_data[qid]["recipients"].append({
+                    "to": m.group("to"),
+                    "status": "sent",
+                    "relay": m.group("relay"),
+                    "reason": "",
+                })
+                continue
 
-        # DELIVERED (lmtp/internal)
-        m = RE_DELIVERED.search(line)
-        if m:
-            qid = m.group("queue_id")
-            queue_data[qid]["recipients"].append({
-                "to": m.group("to"),
-                "status": "delivered",
-                "relay": m.group("relay"),
-                "reason": "",
-            })
-            continue
+            m = RE_DELIVERED.search(line)
+            if m:
+                qid = m.group("queue_id")
+                queue_data[qid]["recipients"].append({
+                    "to": m.group("to"),
+                    "status": "delivered",
+                    "relay": m.group("relay"),
+                    "reason": "",
+                })
+                continue
 
-        # BOUNCED
-        m = RE_BOUNCED.search(line)
-        if m:
-            qid = m.group("queue_id")
-            queue_data[qid]["recipients"].append({
-                "to": m.group("to"),
-                "status": "bounced",
-                "relay": "",
-                "reason": m.group("reason"),
-            })
-            continue
+            m = RE_BOUNCED.search(line)
+            if m:
+                qid = m.group("queue_id")
+                queue_data[qid]["recipients"].append({
+                    "to": m.group("to"),
+                    "status": "bounced",
+                    "relay": "",
+                    "reason": m.group("reason"),
+                })
+                continue
 
-        # DEFERRED
-        m = RE_DEFERRED.search(line)
-        if m:
-            qid = m.group("queue_id")
-            queue_data[qid]["recipients"].append({
-                "to": m.group("to"),
-                "status": "deferred",
-                "relay": "",
-                "reason": m.group("reason"),
-            })
-            continue
+            m = RE_DEFERRED.search(line)
+            if m:
+                qid = m.group("queue_id")
+                queue_data[qid]["recipients"].append({
+                    "to": m.group("to"),
+                    "status": "deferred",
+                    "relay": "",
+                    "reason": m.group("reason"),
+                })
+                continue
 
-        # SPAM score (amavis)
-        m = RE_SPAM.search(line)
-        if m:
-            qid = m.group("queue_id")
-            try:
-                hits = float(m.group("hits"))
-                tag2 = float(m.group("tag2"))
-                queue_data[qid]["spam_hits"] = hits
-                queue_data[qid]["main_class"] = "spam" if hits >= tag2 else "not-spam"
-            except Exception:
-                pass
-            continue
+            m = RE_SPAM.search(line)
+            if m:
+                qid = m.group("queue_id")
+                try:
+                    hits = float(m.group("hits"))
+                    tag2 = float(m.group("tag2"))
+                    queue_data[qid]["main_class"] = "spam" if hits >= tag2 else "not-spam"
+                except Exception:
+                    pass
+                continue
 
-        # Subject (amavis)
-        m = RE_SUBJECT_AMAVIS.search(line)
-        if m:
-            subj = m.group("subject").strip()
-            # cari queue_id terkait dari baris yang sama (tidak ada di regex ini)
-            # simpan sementara
-            queue_data["__subj__"]["subject"] = subj
-            continue
+            m = RE_SUBJECT_AMAVIS.search(line)
+            if m:
+                queue_data["__subj__"]["subject"] = m.group("subject").strip()
+                continue
 
-    # Build flat result list
+            # Check if queue has enough completed records to flush
+            if len(queue_data) >= batch_size:
+                flushed = _flush_queue(queue_data)
+                new_pos = 0 if is_gz else f.tell()
+                yield flushed, new_pos
+
+        # Final flush
+        flushed = _flush_queue(queue_data)
+        new_pos = 0 if is_gz else f.tell()
+        if flushed:
+            yield flushed, new_pos
+
+    finally:
+        f.close()
+
+def _flush_queue(queue_dict):
     results = []
-    for qid, data in queue_data.items():
+    to_delete = []
+    for qid, data in list(queue_dict.items()):
         if qid == "__subj__":
+            continue
+        recipients = data.get("recipients", [])
+        if not recipients:
             continue
 
         sender = data["from"]
@@ -291,65 +244,39 @@ def parse_log_file(filepath: str, max_lines: int = 25000) -> list:
         ts = data["timestamp"]
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else ""
 
-        base = {
-            "message_id": data["message_id"] or qid,
-            "queue_id": qid,
-            "timestamp": ts_str,
-            "auth_domain": auth_domain,
-            "auth_username": auth_user,
-            "identity": identity,
-            "from": sender,
-            "size": data["size"],
-            "subject": data["subject"],
-            "main_class": data["main_class"],
-        }
+        for rec in recipients:
+            results.append({
+                "message_id": data["message_id"] or qid,
+                "queue_id": qid,
+                "timestamp": ts_str,
+                "auth_domain": auth_domain,
+                "auth_username": auth_user,
+                "identity": identity,
+                "from": sender,
+                "to": rec["to"],
+                "status": rec["status"],
+                "relay": rec.get("relay", ""),
+                "reason": rec.get("reason", ""),
+                "size": data["size"],
+                "subject": data["subject"],
+                "main_class": data["main_class"],
+            })
+        to_delete.append(qid)
 
-        recipients = data["recipients"]
-        if not recipients:
-            results.append({**base, "to": "", "status": "unknown", "relay": "", "reason": ""})
-        else:
-            for rec in recipients:
-                results.append({
-                    **base,
-                    "to": rec["to"],
-                    "status": rec["status"],
-                    "relay": rec.get("relay", ""),
-                    "reason": rec.get("reason", ""),
-                })
-
-    # Sort by timestamp desc
-    results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    for qid in to_delete:
+        del queue_dict[qid]
     return results
 
-
-def parse_log_directory(log_dir: str, max_files: int = 2) -> list:
-    """Parse semua maillog* di direktori (termasuk .gz)."""
-    all_results = []
-    files = []
-    for fname in os.listdir(log_dir):
-        if re.match(r"(?:zimbra\.log|mail(?:log|\.log)).*", fname, re.IGNORECASE):
-            files.append(os.path.join(log_dir, fname))
-
-    files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-    for fpath in files[:max_files]:
-        try:
-            all_results.extend(parse_log_file(fpath))
-        except Exception as e:
-            print(f"[WARN] Gagal parse {fpath}: {e}")
-
-    all_results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-    return all_results
-
-
 def parse_log_content(content: str) -> list:
-    """Parse log dari string langsung (upload via browser)."""
+    """Parse string upload."""
     import tempfile
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".log", delete=False, encoding="utf-8"
-    ) as tmp:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False, encoding="utf-8") as tmp:
         tmp.write(content)
         tmp_path = tmp.name
+    results = []
     try:
-        return parse_log_file(tmp_path)
+        for batch, _ in stream_parse_log(tmp_path):
+            results.extend(batch)
+        return results
     finally:
         os.unlink(tmp_path)
