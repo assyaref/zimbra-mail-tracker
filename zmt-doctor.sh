@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 CONF="${ZMT_CONFIG:-/etc/zimbra-mail-tracker/config.json}"
-TOKEN_FILE="${ZMT_DOCTOR_TOKEN_FILE:-/etc/zimbra-mail-tracker/doctor.token}"
+TOKEN_FILE="${ZMT_DOCTOR_TOKEN_FILE:-$(dirname "$CONF")/doctor.token}"
 REPORT="$(mktemp)"
 trap 'rm -f "$REPORT"' EXIT
 
@@ -48,13 +48,7 @@ def add(name, status, detail):
     checks.append({"name":name, "status":status, "detail":str(detail)[:500]})
 
 # Zimbra service inventory
-if shutil.which("su"):
-    rc, output=run(["su","- zimbra -c 'zmcontrol status'"], timeout=25)
-else:
-    rc, output=127, "su command tidak tersedia"
-# Use a shell only for the login-shell command required by Zimbra.
-if rc != 0 or not output:
-    rc, output=run(["bash","-lc","su - zimbra -c 'zmcontrol status'"], timeout=25)
+rc, output=run(["bash","-lc","su - zimbra -c 'zmcontrol status'"], timeout=25)
 running=[line.strip() for line in output.splitlines() if "Running" in line]
 stopped=[line.strip() for line in output.splitlines() if "Stopped" in line]
 if stopped:
