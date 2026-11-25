@@ -169,114 +169,114 @@ def parse_log_file(filepath: str, max_lines: int = 25000) -> list:
             continue
         line = line.rstrip()
 
-            # Message-ID
-            m = RE_MSGID.search(line)
-            if m:
-                qid = m.group("queue_id")
-                queue_data[qid]["queue_id"] = qid
-                queue_data[qid]["message_id"] = m.group("message_id")
-                continue
+        # Message-ID
+        m = RE_MSGID.search(line)
+        if m:
+            qid = m.group("queue_id")
+            queue_data[qid]["queue_id"] = qid
+            queue_data[qid]["message_id"] = m.group("message_id")
+            continue
 
-            # Auth (SASL)
-            m = RE_AUTH.search(line)
-            if m and m.group("auth_user"):
-                qid = m.group("queue_id")
-                auth_user = m.group("auth_user")
-                queue_data[qid]["auth_username"] = auth_user
-                queue_data[qid]["auth_domain"] = _extract_domain(auth_user)
-                if not queue_data[qid]["timestamp"]:
-                    ts = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
-                    queue_data[qid]["timestamp"] = ts
-                continue
+        # Auth (SASL)
+        m = RE_AUTH.search(line)
+        if m and m.group("auth_user"):
+            qid = m.group("queue_id")
+            auth_user = m.group("auth_user")
+            queue_data[qid]["auth_username"] = auth_user
+            queue_data[qid]["auth_domain"] = _extract_domain(auth_user)
+            if not queue_data[qid]["timestamp"]:
+                ts = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
+                queue_data[qid]["timestamp"] = ts
+            continue
 
-            # FROM + size
-            m = RE_FROM.search(line)
-            if m:
-                qid = m.group("queue_id")
-                sender = m.group("from")
-                queue_data[qid]["queue_id"] = qid
-                queue_data[qid]["from"] = sender
-                queue_data[qid]["size"] = int(m.group("size"))
-                # identity = sender kalau belum ada auth_username
-                if not queue_data[qid]["identity"]:
-                    queue_data[qid]["identity"] = sender
-                if not queue_data[qid]["timestamp"]:
-                    ts = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
-                    queue_data[qid]["timestamp"] = ts
-                # auth_domain dari sender kalau belum ada
-                if not queue_data[qid]["auth_domain"]:
-                    queue_data[qid]["auth_domain"] = _extract_domain(sender)
-                continue
+        # FROM + size
+        m = RE_FROM.search(line)
+        if m:
+            qid = m.group("queue_id")
+            sender = m.group("from")
+            queue_data[qid]["queue_id"] = qid
+            queue_data[qid]["from"] = sender
+            queue_data[qid]["size"] = int(m.group("size"))
+            # identity = sender kalau belum ada auth_username
+            if not queue_data[qid]["identity"]:
+                queue_data[qid]["identity"] = sender
+            if not queue_data[qid]["timestamp"]:
+                ts = _parse_ts(m.group("month"), m.group("day"), m.group("time"))
+                queue_data[qid]["timestamp"] = ts
+            # auth_domain dari sender kalau belum ada
+            if not queue_data[qid]["auth_domain"]:
+                queue_data[qid]["auth_domain"] = _extract_domain(sender)
+            continue
 
-            # SENT (external)
-            m = RE_SENT.search(line)
-            if m:
-                qid = m.group("queue_id")
-                queue_data[qid]["recipients"].append({
-                    "to": m.group("to"),
-                    "status": "sent",
-                    "relay": m.group("relay"),
-                    "reason": "",
-                })
-                continue
+        # SENT (external)
+        m = RE_SENT.search(line)
+        if m:
+            qid = m.group("queue_id")
+            queue_data[qid]["recipients"].append({
+                "to": m.group("to"),
+                "status": "sent",
+                "relay": m.group("relay"),
+                "reason": "",
+            })
+            continue
 
-            # DELIVERED (lmtp/internal)
-            m = RE_DELIVERED.search(line)
-            if m:
-                qid = m.group("queue_id")
-                queue_data[qid]["recipients"].append({
-                    "to": m.group("to"),
-                    "status": "delivered",
-                    "relay": m.group("relay"),
-                    "reason": "",
-                })
-                continue
+        # DELIVERED (lmtp/internal)
+        m = RE_DELIVERED.search(line)
+        if m:
+            qid = m.group("queue_id")
+            queue_data[qid]["recipients"].append({
+                "to": m.group("to"),
+                "status": "delivered",
+                "relay": m.group("relay"),
+                "reason": "",
+            })
+            continue
 
-            # BOUNCED
-            m = RE_BOUNCED.search(line)
-            if m:
-                qid = m.group("queue_id")
-                queue_data[qid]["recipients"].append({
-                    "to": m.group("to"),
-                    "status": "bounced",
-                    "relay": "",
-                    "reason": m.group("reason"),
-                })
-                continue
+        # BOUNCED
+        m = RE_BOUNCED.search(line)
+        if m:
+            qid = m.group("queue_id")
+            queue_data[qid]["recipients"].append({
+                "to": m.group("to"),
+                "status": "bounced",
+                "relay": "",
+                "reason": m.group("reason"),
+            })
+            continue
 
-            # DEFERRED
-            m = RE_DEFERRED.search(line)
-            if m:
-                qid = m.group("queue_id")
-                queue_data[qid]["recipients"].append({
-                    "to": m.group("to"),
-                    "status": "deferred",
-                    "relay": "",
-                    "reason": m.group("reason"),
-                })
-                continue
+        # DEFERRED
+        m = RE_DEFERRED.search(line)
+        if m:
+            qid = m.group("queue_id")
+            queue_data[qid]["recipients"].append({
+                "to": m.group("to"),
+                "status": "deferred",
+                "relay": "",
+                "reason": m.group("reason"),
+            })
+            continue
 
-            # SPAM score (amavis)
-            m = RE_SPAM.search(line)
-            if m:
-                qid = m.group("queue_id")
-                try:
-                    hits = float(m.group("hits"))
-                    tag2 = float(m.group("tag2"))
-                    queue_data[qid]["spam_hits"] = hits
-                    queue_data[qid]["main_class"] = "spam" if hits >= tag2 else "not-spam"
-                except Exception:
-                    pass
-                continue
+        # SPAM score (amavis)
+        m = RE_SPAM.search(line)
+        if m:
+            qid = m.group("queue_id")
+            try:
+                hits = float(m.group("hits"))
+                tag2 = float(m.group("tag2"))
+                queue_data[qid]["spam_hits"] = hits
+                queue_data[qid]["main_class"] = "spam" if hits >= tag2 else "not-spam"
+            except Exception:
+                pass
+            continue
 
-            # Subject (amavis)
-            m = RE_SUBJECT_AMAVIS.search(line)
-            if m:
-                subj = m.group("subject").strip()
-                # cari queue_id terkait dari baris yang sama (tidak ada di regex ini)
-                # simpan sementara
-                queue_data["__subj__"]["subject"] = subj
-                continue
+        # Subject (amavis)
+        m = RE_SUBJECT_AMAVIS.search(line)
+        if m:
+            subj = m.group("subject").strip()
+            # cari queue_id terkait dari baris yang sama (tidak ada di regex ini)
+            # simpan sementara
+            queue_data["__subj__"]["subject"] = subj
+            continue
 
     # Build flat result list
     results = []
