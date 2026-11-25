@@ -18,6 +18,6 @@ LOG_PATTERN = os.getenv("ZMT_LOG_PATTERN", "maillog")  # maillog / mail.log / zi
 # ── App Info ──────────────────────────────────────────────────────────────────
 APP_NAME = "ZIMBRA MAIL TRACKER"
 APP_SUBTITLE = "INTELLIGENCE MAIL SURVEILLANCE SYSTEM"
-APP_VERSION = "v2.0"
+APP_VERSION = "v2.1.0"
 AGENCY_CODE = "ZMT-INTEL"
 CLASSIFICATION = "CONFIDENTIAL"

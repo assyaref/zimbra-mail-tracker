@@ -21,7 +21,7 @@ echo ""
 # 1. Copy files to /opt/zimbra-mail-tracker
 mkdir -p "$DIR" "$CONF_DIR"
 cp -r "$SRC"/* "$DIR"/
-chmod +x "$DIR/update.sh" "$DIR/run.sh" 2>/dev/null || true
+chmod +x "$DIR/update.sh" "$DIR/run.sh" "$DIR/zmt-doctor.sh" 2>/dev/null || true
 
 # 2. Generate self-signed SSL cert if not exists
 CERT="$CONF_DIR/cert.pem"
@@ -66,6 +66,7 @@ fi
 
 # 4. Install zmt-update command
 ln -sf "$DIR/update.sh" /usr/local/bin/zmt-update
+ln -sf "$DIR/zmt-doctor.sh" /usr/local/bin/zmt-doctor
 
 # 5. Create systemd service
 cat > "/etc/systemd/system/${SERVICE}.service" <<EOF

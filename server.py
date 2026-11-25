@@ -47,6 +47,46 @@ if os.path.isfile(CONF_PATH):
 # Inisialisasi Database SQLite
 db.init_db()
 
+# ── ZMT Doctor report channel ────────────────────────────────────────────────
+_DOCTOR_DIR = os.path.dirname(CONF_PATH)
+_DOCTOR_TOKEN_PATH = os.getenv("ZMT_DOCTOR_TOKEN_FILE", os.path.join(_DOCTOR_DIR, "doctor.token"))
+_DOCTOR_REPORT_PATH = os.getenv("ZMT_DOCTOR_REPORT_FILE", os.path.join(_DOCTOR_DIR, "doctor-report.json"))
+
+def _load_or_create_doctor_token():
+    try:
+        os.makedirs(_DOCTOR_DIR, exist_ok=True)
+        if os.path.isfile(_DOCTOR_TOKEN_PATH):
+            with open(_DOCTOR_TOKEN_PATH, "r", encoding="utf-8") as token_file:
+                token = token_file.read().strip()
+            if token:
+                return token
+        token = secrets.token_urlsafe(48)
+        fd = os.open(_DOCTOR_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as token_file:
+            token_file.write(token + "\n")
+        return token
+    except OSError as exc:
+        print(f"[WARN] ZMT Doctor token unavailable: {exc}")
+        return ""
+
+_DOCTOR_TOKEN = _load_or_create_doctor_token()
+
+def _read_doctor_report():
+    try:
+        with open(_DOCTOR_REPORT_PATH, "r", encoding="utf-8") as report_file:
+            return json.load(report_file)
+    except (OSError, ValueError):
+        return None
+
+def _save_doctor_report(report):
+    os.makedirs(os.path.dirname(_DOCTOR_REPORT_PATH), exist_ok=True)
+    temp_path = _DOCTOR_REPORT_PATH + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as report_file:
+        json.dump(report, report_file, ensure_ascii=False)
+    os.chmod(temp_path, 0o600)
+    os.replace(temp_path, _DOCTOR_REPORT_PATH)
+
+
 # ── Sessions ──────────────────────────────────────────────────────────────────
 _sessions = set()
 
@@ -253,6 +293,11 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "online", "version": ver, "sync": _sync_status})
             return
 
+        # Latest VPS diagnostic report (dashboard session required).
+        if path == "/api/doctor/latest":
+            self._send_json({"report": _read_doctor_report()})
+            return
+
         # Vitals
         if path == "/api/vitals":
             vitals = {"cpu": 15.0, "ram_used": "6.2G", "ram_total": "16.0G", "ram_pct": 38,
@@ -376,6 +421,34 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": True}, 200, extra_headers={"Set-Cookie": cookie})
             else:
                 self._send_json({"success": False, "error": "ACCESS DENIED: INVALID CREDENTIALS"}, 401)
+            return
+
+        # VPS diagnostic agent: authenticated with a dedicated root-only token.
+        if path == "/api/doctor/report":
+            supplied = self.headers.get("X-ZMT-Doctor-Token", "")
+            if not _DOCTOR_TOKEN or not secrets.compare_digest(supplied, _DOCTOR_TOKEN):
+                self._send_json({"error": "Invalid doctor token"}, 401)
+                return
+            if len(body) > 65536:
+                self._send_json({"error": "Report too large"}, 413)
+                return
+            try:
+                report = json.loads(body.decode("utf-8"))
+                if not isinstance(report, dict) or not isinstance(report.get("checks"), list):
+                    raise ValueError("Invalid report structure")
+                report["checks"] = report["checks"][:40]
+                report["hostname"] = str(report.get("hostname", ""))[:255]
+                report["checked_at"] = str(report.get("checked_at", ""))[:64]
+                report["overall"] = str(report.get("overall", "UNKNOWN"))[:16]
+                for item in report["checks"]:
+                    if isinstance(item, dict):
+                        item["name"] = str(item.get("name", ""))[:100]
+                        item["status"] = str(item.get("status", "UNKNOWN"))[:16]
+                        item["detail"] = str(item.get("detail", ""))[:500]
+                _save_doctor_report(report)
+                self._send_json({"success": True, "checked_at": report["checked_at"]})
+            except (ValueError, OSError) as exc:
+                self._send_json({"error": f"Invalid report: {exc}"}, 400)
             return
 
         if not self._check_auth():

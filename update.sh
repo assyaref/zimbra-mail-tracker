@@ -43,7 +43,8 @@ case "${1:-}" in
     git clone --depth 1 "$repo" "$tmp"
     cp -r "$tmp"/* "$DIR"/
     rm -rf "$tmp"
-    chmod +x "$DIR/update.sh" "$DIR/run.sh" "$DIR/install.sh" 2>/dev/null || true
+    chmod +x "$DIR/update.sh" "$DIR/run.sh" "$DIR/install.sh" "$DIR/zmt-doctor.sh" 2>/dev/null || true
+    ln -sf "$DIR/zmt-doctor.sh" /usr/local/bin/zmt-doctor
     systemctl restart "$SERVICE"
     echo "[OK] Updated ke $(cur)!"
     ;;
