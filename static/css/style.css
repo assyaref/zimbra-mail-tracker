@@ -697,6 +697,27 @@ td.td-check {
 
 .td-monospace { font-family: var(--font-mono); font-size: 10px; }
 
+/* Make the email subject easy to spot and read in the log table. */
+td.td-subject {
+  min-width: 280px;
+  max-width: 360px;
+  white-space: normal;
+  overflow: hidden;
+  text-overflow: clip;
+  background: rgba(0, 255, 65, 0.025);
+}
+.subject-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: #b8ffd0;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+tbody tr:hover .subject-text { color: var(--green); }
+
 /* Checkbox */
 input[type=checkbox] {
   accent-color: var(--green);

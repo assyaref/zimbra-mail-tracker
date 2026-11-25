@@ -23,13 +23,13 @@ const state = {
   columns: {
     message_id:    { label: 'Message ID',    visible: true },
     timestamp:     { label: 'Timestamp',     visible: true },
+    subject:       { label: 'Email Subject',  visible: true },
     auth_domain:   { label: 'Auth Domain',   visible: true },
     auth_username: { label: 'Auth Username', visible: true },
     identity:      { label: 'Identity',      visible: true },
     from:          { label: 'Sender',        visible: true },
     to:            { label: 'Recipient',     visible: true },
     main_class:    { label: 'Main Class',    visible: true },
-    subject:       { label: 'Subject',       visible: true },
     status:        { label: 'Status',        visible: true },
   },
 };
@@ -141,8 +141,9 @@ function renderTable(rows) {
           td.innerHTML = mainClassBadge(row.main_class);
           break;
         case 'subject':
-          td.style.maxWidth = '220px';
-          td.innerHTML = `<span title="${esc(row.subject)}" style="color:#a8d8b4">${esc(truncate(row.subject, 40))}</span>`;
+          td.className = 'td-subject';
+          td.title = row.subject || 'Subject tidak tersedia pada log sumber';
+          td.innerHTML = `<span class="subject-text">${esc(row.subject || '— Subject tidak tercatat —')}</span>`;
           break;
         case 'from':
         case 'to':
@@ -238,7 +239,7 @@ function renderHeader() {
     from:          { label: 'Sender ⇅', sortKey: 'from' },
     to:            { label: 'Recipient ⇅', sortKey: 'to' },
     main_class:    { label: 'Main Class ⇅', sortKey: 'main_class', w: '100px' },
-    subject:       { label: 'Subject ⇅', sortKey: 'subject' },
+    subject:       { label: 'Email Subject', sortKey: 'subject', w: '300px' },
     status:        { label: 'Status ⇅', sortKey: 'status', w: '90px' },
   };
 
