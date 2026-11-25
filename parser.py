@@ -100,9 +100,52 @@ def _extract_domain(email: str) -> str:
     return ""
 
 
-def parse_log_file(filepath: str) -> list:
+def _read_last_lines(filepath: str, max_lines: int = 25000):
+    """Membaca N baris terakhir dari file secara cepat (tail)."""
+    if filepath.endswith(".gz"):
+        lines = []
+        try:
+            with gzip.open(filepath, "rt", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    lines.append(line)
+                    if len(lines) > max_lines:
+                        lines.pop(0)
+        except Exception:
+            pass
+        return lines
+
+    # Untuk file plain text .log biasa (sangat cepat via seek byte dari belakang)
+    lines = []
+    try:
+        with open(filepath, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            buffer = bytearray()
+            pointer = f.tell()
+            block_size = 65536
+
+            while pointer > 0 and len(lines) < max_lines:
+                read_size = min(pointer, block_size)
+                pointer -= read_size
+                f.seek(pointer)
+                chunk = f.read(read_size)
+                buffer = chunk + buffer
+                split_lines = buffer.split(b"\n")
+                buffer = split_lines[0]
+                lines = [l.decode("utf-8", errors="ignore") for l in split_lines[1:]] + lines
+
+            if buffer and len(lines) < max_lines:
+                lines.insert(0, buffer.decode("utf-8", errors="ignore"))
+    except Exception:
+        # Fallback reading
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()[-max_lines:]
+
+    return lines[-max_lines:]
+
+
+def parse_log_file(filepath: str, max_lines: int = 25000) -> list:
     """
-    Parse satu file log Zimbra. Mengembalikan list of dict per email.
+    Parse log Zimbra secara efisien mengambil N baris terbaru.
     """
     queue_data: dict = defaultdict(lambda: {
         "message_id": "",
@@ -119,16 +162,12 @@ def parse_log_file(filepath: str) -> list:
         "recipients": [],
     })
 
-    def open_log(path):
-        if path.endswith(".gz"):
-            return gzip.open(path, "rt", encoding="utf-8", errors="ignore")
-        return open(path, "r", encoding="utf-8", errors="ignore")
+    raw_lines = _read_last_lines(filepath, max_lines=max_lines)
 
-    with open_log(filepath) as f:
-        for line in f:
-            if "postfix/" not in line and "amavis[" not in line:
-                continue
-            line = line.rstrip()
+    for line in raw_lines:
+        if "postfix/" not in line and "amavis[" not in line:
+            continue
+        line = line.rstrip()
 
             # Message-ID
             m = RE_MSGID.search(line)
