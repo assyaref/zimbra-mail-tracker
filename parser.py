@@ -215,7 +215,6 @@ def stream_parse_log(filepath: str, start_offset: int = 0, batch_size: int = 100
                         for item in queue_data.values():
                             if item.get("message_id", "").strip("<>") == msgid:
                                 item["subject"] = subject
-                continue
 
             m = RE_SPAM.search(line)
             if m:
