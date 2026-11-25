@@ -62,8 +62,8 @@ RE_SUBJECT_AMAVIS = re.compile(
     r"amavis\[\d+\]:\s+.*?Subject:\s*(?P<subject>.+)"
 )
 
-RE_AMAVIS_QUEUE_ID = re.compile(r"(?:queued_as|Queue-ID):\\s*(?P<queue_id>[A-Za-z0-9]+)")
-RE_AMAVIS_MESSAGE_ID = re.compile(r"Message-ID:\\s*<(?P<message_id>[^>]+)>")
+RE_AMAVIS_QUEUE_ID = re.compile(r"(?:queued_as|Queue-ID):\s*(?P<queue_id>[A-Za-z0-9]+)")
+RE_AMAVIS_MESSAGE_ID = re.compile(r"Message-ID:\s*<(?P<message_id>[^>]+)>")
 
 MONTH_MAP = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
