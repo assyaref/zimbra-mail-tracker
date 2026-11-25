@@ -126,6 +126,8 @@ def parse_log_file(filepath: str) -> list:
 
     with open_log(filepath) as f:
         for line in f:
+            if "postfix/" not in line and "amavis[" not in line:
+                continue
             line = line.rstrip()
 
             # Message-ID
@@ -281,7 +283,7 @@ def parse_log_file(filepath: str) -> list:
     return results
 
 
-def parse_log_directory(log_dir: str, max_files: int = 10) -> list:
+def parse_log_directory(log_dir: str, max_files: int = 2) -> list:
     """Parse semua maillog* di direktori (termasuk .gz)."""
     all_results = []
     files = []
