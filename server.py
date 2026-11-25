@@ -42,10 +42,22 @@ if os.path.isfile(CONF_PATH):
     except Exception as e:
         print(f"[WARN] Failed to load {CONF_PATH}: {e}")
 
+# ── In-memory Sessions ────────────────────────────────────────────────────────
+_sessions = set()
+
+def _create_session():
+    token = secrets.token_hex(32)
+    _sessions.add(token)
+    return token
+
+def _valid_session(token):
+    return token in _sessions
+
 # ── In-memory Log Cache ───────────────────────────────────────────────────────
 _log_cache = []
 _last_auto_load = 0.0
 _manual_upload = False
+
 
 DEMO_DATA = [
     {"message_id": "1xlzun-00ArLt-PK", "queue_id": "A1B2C3D4E", "timestamp": "2026-10-20 09:49:00",
@@ -196,6 +208,17 @@ class TrackerHandler(BaseHTTPRequestHandler):
         if not expected_user or not expected_hash:
             return True
 
+        # Check Cookie session
+        cookie_hdr = self.headers.get("Cookie", "")
+        if cookie_hdr:
+            for part in cookie_hdr.split(";"):
+                part = part.strip()
+                if part.startswith("zmt_session="):
+                    token = part.split("=", 1)[1]
+                    if _valid_session(token):
+                        return True
+
+        # Check Basic Auth fallback
         auth_hdr = self.headers.get("Authorization", "")
         if auth_hdr.startswith("Basic "):
             try:
@@ -207,18 +230,16 @@ class TrackerHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="ZIMBRA MAIL TRACKER — AUTHORIZED ACCESS ONLY"')
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"401 Unauthorized")
         return False
 
-    def _send_json(self, obj, status=200):
+    def _send_json(self, obj, status=200, extra_headers=None):
         raw = json.dumps(obj).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         self.wfile.write(raw)
 
@@ -233,9 +254,6 @@ class TrackerHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        if not self._check_auth():
-            return
-
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -243,6 +261,45 @@ class TrackerHandler(BaseHTTPRequestHandler):
         def qget(key, default=""):
             vals = qs.get(key)
             return vals[0] if vals else default
+
+        # ── Static files (Allow unauthenticated so login page styles load) ───
+        if path.startswith("/static/"):
+            rel = path.lstrip("/").replace("/", os.sep)
+            full_path = os.path.abspath(os.path.join(BASE_DIR, rel))
+            static_root = os.path.abspath(os.path.join(BASE_DIR, "static"))
+            if not full_path.startswith(static_root) or not os.path.isfile(full_path):
+                self._send_json({"error": "Not found"}, 404)
+                return
+            ctype, _ = mimetypes.guess_type(full_path)
+            with open(full_path, "rb") as f:
+                self._send_bytes(f.read(), ctype or "application/octet-stream")
+            return
+
+        # ── Login Page ────────────────────────────────────────────────────────
+        if path == "/login" or path == "/login.html":
+            tpl_path = os.path.join(BASE_DIR, "templates", "login.html")
+            with open(tpl_path, "r", encoding="utf-8") as f:
+                html = f.read()
+            self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
+            return
+
+        # ── Logout ────────────────────────────────────────────────────────────
+        if path == "/logout":
+            self.send_response(302)
+            self.send_header("Set-Cookie", "zmt_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+            self.send_header("Location", "/login")
+            self.end_headers()
+            return
+
+        # ── Check Authentication for all other routes ─────────────────────────
+        if not self._check_auth():
+            if path.startswith("/api/"):
+                self._send_json({"error": "Unauthorized", "auth_required": True}, 401)
+            else:
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+            return
 
         # ── Index HTML ────────────────────────────────────────────────────────
         if path == "/" or path == "/index.html":
@@ -389,15 +446,44 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global _log_cache, _manual_upload
-        if not self._check_auth():
-            return
-
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
         if length > 100 * 1024 * 1024:
             self._send_json({"error": "Payload too large (max 100MB)"}, 413)
             return
         body = self.rfile.read(length) if length > 0 else b""
+
+        # ── POST /api/login ───────────────────────────────────────────────────
+        if path == "/api/login":
+            try:
+                data = json.loads(body.decode("utf-8")) if body else {}
+            except Exception:
+                data = {}
+            user = data.get("username", "")
+            pwd = data.get("password", "")
+            expected_user = _runtime_cfg.get("username", "")
+            expected_hash = _runtime_cfg.get("password_hash", "")
+
+            # If no auth configured, allow immediately
+            if not expected_user or not expected_hash:
+                token = _create_session()
+                cookie = f"zmt_session={token}; Path=/; HttpOnly; SameSite=Lax"
+                self._send_json({"success": True}, 200, extra_headers={"Set-Cookie": cookie})
+                return
+
+            pwd_hash = hashlib.sha256(pwd.encode("utf-8")).hexdigest()
+            if secrets.compare_digest(user, expected_user) and secrets.compare_digest(pwd_hash, expected_hash):
+                token = _create_session()
+                cookie = f"zmt_session={token}; Path=/; HttpOnly; SameSite=Lax"
+                self._send_json({"success": True}, 200, extra_headers={"Set-Cookie": cookie})
+            else:
+                self._send_json({"success": False, "error": "ACCESS DENIED: INVALID CREDENTIALS"}, 401)
+            return
+
+        # ── Check Authentication for protected POST routes ────────────────────
+        if not self._check_auth():
+            self._send_json({"error": "Unauthorized"}, 401)
+            return
 
         # ── POST /api/upload ──────────────────────────────────────────────────
         if path == "/api/upload":
