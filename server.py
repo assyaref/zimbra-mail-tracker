@@ -1,6 +1,6 @@
 """
-Zimbra Mail Tracker — Standalone Python Stdlib Server (ZIMMON-style)
-Zero external dependencies. Runs directly via python3 or systemd service.
+Zimbra Mail Tracker — Standalone Python Server with Persistent DB & Background Log Sync
+Zero external dependencies. Runs via standard library.
 """
 
 import os
@@ -12,13 +12,15 @@ import time
 import base64
 import hashlib
 import secrets
+import threading
 import mimetypes
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 import config
-from parser import parse_log_content, parse_log_directory
+from parser import parse_log_content, stream_parse_log
+import db
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONF_PATH = os.getenv("ZMT_CONFIG", "/etc/zimbra-mail-tracker/config.json")
@@ -32,7 +34,7 @@ _runtime_cfg = {
     "key": "",
     "username": "",
     "password_hash": "",
-    "auto_load_interval": 60,
+    "auto_load_interval": 30,
 }
 
 if os.path.isfile(CONF_PATH):
@@ -42,7 +44,10 @@ if os.path.isfile(CONF_PATH):
     except Exception as e:
         print(f"[WARN] Failed to load {CONF_PATH}: {e}")
 
-# ── In-memory Sessions ────────────────────────────────────────────────────────
+# Inisialisasi Database SQLite
+db.init_db()
+
+# ── Sessions ──────────────────────────────────────────────────────────────────
 _sessions = set()
 
 def _create_session():
@@ -53,154 +58,80 @@ def _create_session():
 def _valid_session(token):
     return token in _sessions
 
-# ── In-memory Log Cache ───────────────────────────────────────────────────────
-_log_cache = []
-_last_auto_load = 0.0
-_manual_upload = False
+# ── Background Worker: Log Synchronizer ───────────────────────────────────────
+_sync_status = {"running": False, "last_sync": "Never", "files_processed": 0, "total_records": 0}
 
-
-DEMO_DATA = [
-    {"message_id": "1xlzun-00ArLt-PK", "queue_id": "A1B2C3D4E", "timestamp": "2026-10-20 09:49:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "yuriko.fitria@radiant-utama.com",
-     "identity": "yuriko.fitria@radiant-utama.com", "from": "yuriko.fitria@radiant-utama.com",
-     "to": "mhadi16@slb.com", "status": "delivered", "relay": "mail.slb.com",
-     "reason": "", "size": 48234, "subject": "Invoice Hotel Susuka dan Hotel Grand Zuri",
-     "main_class": "not-spam"},
-    {"message_id": "1xlzun-00ArLt-PK", "queue_id": "A1B2C3D4E", "timestamp": "2026-10-20 09:49:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "yuriko.fitria@radiant-utama.com",
-     "identity": "yuriko.fitria@radiant-utama.com", "from": "yuriko.fitria@radiant-utama.com",
-     "to": "daniellahm07@gmail.com", "status": "delivered", "relay": "gmail-smtp-in.l.google.com",
-     "reason": "", "size": 48234, "subject": "Invoice Hotel Susuka dan Hotel Grand Zuri",
-     "main_class": "not-spam"},
-    {"message_id": "1xJ03z-006pT8-9C", "queue_id": "B2C3D4E5F", "timestamp": "2026-10-20 09:45:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "yuriko.fitria@radiant-utama.com",
-     "identity": "yuriko.fitria@radiant-utama.com", "from": "yuriko.fitria@radiant-utama.com",
-     "to": "nali56@slb.com", "status": "delivered", "relay": "mail.slb.com",
-     "reason": "", "size": 32100, "subject": "FW: [Ext] RE: Q4 OPEN GOPool Recruitment - October 2026",
-     "main_class": "not-spam"},
-    {"message_id": "1xJ03z-006pT8-9C", "queue_id": "B2C3D4E5F", "timestamp": "2026-10-20 09:45:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "yuriko.fitria@radiant-utama.com",
-     "identity": "yuriko.fitria@radiant-utama.com", "from": "yuriko.fitria@radiant-utama.com",
-     "to": "mzaki16@slb.com", "status": "delivered", "relay": "mail.slb.com",
-     "reason": "", "size": 32100, "subject": "FW: [Ext] RE: Q4 OPEN GOPool Recruitment - October 2026",
-     "main_class": "not-spam"},
-    {"message_id": "1xJ03z-006pT8-9C", "queue_id": "B2C3D4E5F", "timestamp": "2026-10-20 09:45:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "yuriko.fitria@radiant-utama.com",
-     "identity": "yuriko.fitria@radiant-utama.com", "from": "yuriko.fitria@radiant-utama.com",
-     "to": "lqadhayna@slb.com", "status": "bounced", "relay": "",
-     "reason": "550 5.1.1 User unknown", "size": 32100,
-     "subject": "FW: [Ext] RE: Q4 OPEN GOPool Recruitment - October 2026",
-     "main_class": "not-spam"},
-    {"message_id": "1xJ03z-006pT8-9C", "queue_id": "B2C3D4E5F", "timestamp": "2026-10-20 09:45:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "yuriko.fitria@radiant-utama.com",
-     "identity": "yuriko.fitria@radiant-utama.com", "from": "yuriko.fitria@radiant-utama.com",
-     "to": "daniellahm07@gmail.com", "status": "delivered", "relay": "gmail-smtp-in.l.google.com",
-     "reason": "", "size": 32100, "subject": "FW: [Ext] RE: Q4 OPEN GOPool Recruitment - October 2026",
-     "main_class": "not-spam"},
-    {"message_id": "1xJ03z-006pT8-9C", "queue_id": "B2C3D4E5F", "timestamp": "2026-10-20 09:45:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "yuriko.fitria@radiant-utama.com",
-     "identity": "yuriko.fitria@radiant-utama.com", "from": "yuriko.fitria@radiant-utama.com",
-     "to": "crosyidah@slb.com", "status": "deferred", "relay": "mail.slb.com",
-     "reason": "451 Temporary failure", "size": 32100,
-     "subject": "FW: [Ext] RE: Q4 OPEN GOPool Recruitment - October 2026",
-     "main_class": "not-spam"},
-    {"message_id": "1xlylt-006Zfm-14", "queue_id": "C3D4E5F6G", "timestamp": "2026-10-20 08:22:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "admin@radiant-utama.com",
-     "identity": "admin@radiant-utama.com", "from": "admin@radiant-utama.com",
-     "to": "rakbar5@slb.com", "status": "delivered", "relay": "mail.slb.com",
-     "reason": "", "size": 15200, "subject": "RE: Surat Rujukan - Bp. Alimar",
-     "main_class": "not-spam"},
-    {"message_id": "1xlylt-006Zfm-14", "queue_id": "C3D4E5F6G", "timestamp": "2026-10-20 08:22:00",
-     "auth_domain": "zimbra.cloudmatika.com", "auth_username": "admin@radiant-utama.com",
-     "identity": "admin@radiant-utama.com", "from": "admin@radiant-utama.com",
-     "to": "nayondra@slb.com", "status": "delivered", "relay": "mail.slb.com",
-     "reason": "", "size": 15200, "subject": "RE: Surat Rujukan - Bp. Alimar",
-     "main_class": "not-spam"},
-    {"message_id": "SPAM-9fXz01-spam", "queue_id": "D4E5F6G7H", "timestamp": "2026-10-20 07:10:00",
-     "auth_domain": "unknown.ru", "auth_username": "bulk@unknown.ru",
-     "identity": "bulk@unknown.ru", "from": "bulk@unknown.ru",
-     "to": "admin@radiant-utama.com", "status": "bounced", "relay": "",
-     "reason": "550 Spam detected", "size": 2048,
-     "subject": "You won a prize! Claim now!", "main_class": "spam"},
-]
-
-
-def _maybe_auto_load():
-    """Auto-load logs from log_dir on Zimbra VPS if not manually overridden."""
-    global _log_cache, _last_auto_load
-    if _manual_upload:
-        return
-    interval = int(_runtime_cfg.get("auto_load_interval", 60))
-    now = time.time()
-    if _log_cache and (now - _last_auto_load) < interval:
-        return
-    log_dir = _runtime_cfg.get("log_dir", "/var/log")
-    if os.path.isdir(log_dir):
+def _background_log_sync():
+    """Background thread yang membaca dan mengimpor SEMUA log mail secara terus menerus."""
+    time.sleep(2)  # Delay start
+    while True:
         try:
-            records = parse_log_directory(log_dir)
-            if records:
-                _log_cache = records
+            log_dir = _runtime_cfg.get("log_dir", "/var/log")
+            if os.path.isdir(log_dir):
+                _sync_status["running"] = True
+                conn = db.get_db()
+                cursor = conn.cursor()
+
+                # Cari semua file log zimbra / mail
+                log_files = []
+                for fname in os.listdir(log_dir):
+                    if fname.startswith("zimbra.log") or fname.startswith("maillog") or fname.startswith("mail.log"):
+                        full_p = os.path.join(log_dir, fname)
+                        log_files.append(full_p)
+
+                # Urutkan dari file lama ke file baru agar urutan timestamp log benar
+                log_files.sort(key=lambda x: os.path.getmtime(x))
+
+                for fpath in log_files:
+                    mtime = os.path.getmtime(fpath)
+                    is_gz = fpath.endswith(".gz")
+
+                    cursor.execute("SELECT last_pos, last_mtime FROM file_offsets WHERE filepath = ?", (fpath,))
+                    row = cursor.fetchone()
+
+                    last_pos = 0
+                    if row:
+                        # Jika file .gz sudah pernah dibaca dan mtime sama, skip
+                        if is_gz and row["last_mtime"] == mtime:
+                            continue
+                        last_pos = row["last_pos"]
+
+                    # Parse secara streaming
+                    new_pos = last_pos
+                    total_in_file = 0
+                    for batch, pos in stream_parse_log(fpath, start_offset=last_pos):
+                        if batch:
+                            inserted = db.insert_records(batch)
+                            total_in_file += inserted
+                        new_pos = pos
+
+                    # Update offset file
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO file_offsets (filepath, last_pos, last_mtime)
+                        VALUES (?, ?, ?)
+                    """, (fpath, new_pos, mtime))
+                    conn.commit()
+
+                conn.close()
+                _sync_status["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                _sync_status["running"] = False
         except Exception as e:
-            print(f"[WARN] Auto-load failed for {log_dir}: {e}")
-    _last_auto_load = now
+            print(f"[ERR] Background log sync: {e}")
+            _sync_status["running"] = False
 
+        interval = int(_runtime_cfg.get("auto_load_interval", 30))
+        time.sleep(max(10, interval))
 
-def _build_chart(data):
-    days = {}
-    for i in range(6, -1, -1):
-        d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-        days[d] = {"date": d, "delivered": 0, "bounced": 0, "deferred": 0, "spam": 0}
-
-    for row in data:
-        ts = row.get("timestamp", "")
-        date = ts[:10] if ts else ""
-        if date in days:
-            status = row.get("status", "")
-            if status in ("delivered", "sent"):
-                days[date]["delivered"] += 1
-            elif status == "bounced":
-                days[date]["bounced"] += 1
-            elif status == "deferred":
-                days[date]["deferred"] += 1
-            if row.get("main_class") == "spam":
-                days[date]["spam"] += 1
-    return list(days.values())
-
-
-def _parse_multipart_file(content_type: str, body: bytes):
-    """Parse multipart/form-data upload using stdlib without deprecated cgi module."""
-    boundary_marker = "boundary="
-    if boundary_marker not in content_type:
-        return None, None
-    boundary = content_type.split(boundary_marker, 1)[1].strip().strip('"').encode("utf-8")
-    parts = body.split(b"--" + boundary)
-    for part in parts:
-        if b"Content-Disposition" not in part:
-            continue
-        header_end = part.find(b"\r\n\r\n")
-        if header_end == -1:
-            continue
-        headers_raw = part[:header_end].decode("utf-8", errors="ignore")
-        payload = part[header_end + 4:]
-        if payload.endswith(b"\r\n"):
-            payload = payload[:-2]
-        if 'name="file"' in headers_raw:
-            fname = "uploaded.log"
-            for token in headers_raw.split(";"):
-                token = token.strip()
-                if token.startswith("filename="):
-                    fname = token.split("=", 1)[1].strip().strip('"')
-                    break
-            return fname, payload
-    return None, None
+# Start Worker Thread
+sync_thread = threading.Thread(target=_background_log_sync, daemon=True)
+sync_thread.start()
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
     server_version = "ZMT-Intel/2.0"
 
     def log_message(self, format, *args):
-        # Keep stdout clean for systemd journal
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {self.address_string()} - {format % args}")
+        pass
 
     def _check_auth(self) -> bool:
         expected_user = _runtime_cfg.get("username", "")
@@ -208,7 +139,6 @@ class TrackerHandler(BaseHTTPRequestHandler):
         if not expected_user or not expected_hash:
             return True
 
-        # Check Cookie session
         cookie_hdr = self.headers.get("Cookie", "")
         if cookie_hdr:
             for part in cookie_hdr.split(";"):
@@ -218,7 +148,6 @@ class TrackerHandler(BaseHTTPRequestHandler):
                     if _valid_session(token):
                         return True
 
-        # Check Basic Auth fallback
         auth_hdr = self.headers.get("Authorization", "")
         if auth_hdr.startswith("Basic "):
             try:
@@ -229,7 +158,6 @@ class TrackerHandler(BaseHTTPRequestHandler):
                     return True
             except Exception:
                 pass
-
         return False
 
     def _send_json(self, obj, status=200, extra_headers=None):
@@ -262,7 +190,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
             vals = qs.get(key)
             return vals[0] if vals else default
 
-        # ── Static files (Allow unauthenticated so login page styles load) ───
+        # Static assets
         if path.startswith("/static/"):
             rel = path.lstrip("/").replace("/", os.sep)
             full_path = os.path.abspath(os.path.join(BASE_DIR, rel))
@@ -275,7 +203,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 self._send_bytes(f.read(), ctype or "application/octet-stream")
             return
 
-        # ── Login Page ────────────────────────────────────────────────────────
+        # Login page
         if path == "/login" or path == "/login.html":
             tpl_path = os.path.join(BASE_DIR, "templates", "login.html")
             with open(tpl_path, "r", encoding="utf-8") as f:
@@ -283,7 +211,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
             return
 
-        # ── Logout ────────────────────────────────────────────────────────────
+        # Logout
         if path == "/logout":
             self.send_response(302)
             self.send_header("Set-Cookie", "zmt_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
@@ -291,17 +219,17 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        # ── Check Authentication for all other routes ─────────────────────────
+        # Auth check
         if not self._check_auth():
             if path.startswith("/api/"):
-                self._send_json({"error": "Unauthorized", "auth_required": True}, 401)
+                self._send_json({"error": "Unauthorized"}, 401)
             else:
                 self.send_response(302)
                 self.send_header("Location", "/login")
                 self.end_headers()
             return
 
-        # ── Index HTML ────────────────────────────────────────────────────────
+        # Index page
         if path == "/" or path == "/index.html":
             tpl_path = os.path.join(BASE_DIR, "templates", "index.html")
             with open(tpl_path, "r", encoding="utf-8") as f:
@@ -318,36 +246,21 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self._send_bytes(html.encode("utf-8"), "text/html; charset=utf-8")
             return
 
-        # ── Static files ──────────────────────────────────────────────────────
-        if path.startswith("/static/"):
-            rel = path.lstrip("/").replace("/", os.sep)
-            full_path = os.path.abspath(os.path.join(BASE_DIR, rel))
-            static_root = os.path.abspath(os.path.join(BASE_DIR, "static"))
-            if not full_path.startswith(static_root) or not os.path.isfile(full_path):
-                self._send_json({"error": "Not found"}, 404)
-                return
-            ctype, _ = mimetypes.guess_type(full_path)
-            with open(full_path, "rb") as f:
-                self._send_bytes(f.read(), ctype or "application/octet-stream")
-            return
-
-        # ── Health / Session endpoint (like zimmon) ───────────────────────────
+        # Session
         if path == "/api/session":
             version_file = os.path.join(BASE_DIR, "VERSION")
             ver = open(version_file).read().strip() if os.path.isfile(version_file) else config.APP_VERSION
-            self._send_json({"status": "online", "version": ver, "app": config.APP_NAME})
+            self._send_json({"status": "online", "version": ver, "sync": _sync_status})
             return
 
-        # ── System Vitals Endpoint (CPU, RAM, DISK, SWAP) ─────────────────────
+        # Vitals
         if path == "/api/vitals":
             vitals = {"cpu": 15.0, "ram_used": "6.2G", "ram_total": "16.0G", "ram_pct": 38,
                       "disk_free": "116G", "disk_pct": 45, "swap_used": "0.1G", "swap_total": "8.0G", "swap_pct": 2}
             try:
-                # CPU load from /proc/loadavg
                 if os.path.exists("/proc/loadavg"):
                     with open("/proc/loadavg") as f:
                         vitals["cpu"] = round(float(f.read().split()[0]) * 10, 1)
-                # RAM & SWAP from /proc/meminfo
                 if os.path.exists("/proc/meminfo"):
                     mem = {}
                     with open("/proc/meminfo") as f:
@@ -367,7 +280,6 @@ class TrackerHandler(BaseHTTPRequestHandler):
                     vitals["swap_used"] = f"{sw_used/1048576:.1f}G"
                     vitals["swap_total"] = f"{sw_total/1048576:.1f}G"
                     vitals["swap_pct"] = int((sw_used / max(1, sw_total)) * 100)
-                # Disk from statvfs
                 st = os.statvfs("/")
                 free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
                 total_gb = (st.f_blocks * st.f_frsize) / (1024**3)
@@ -378,69 +290,30 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self._send_json(vitals)
             return
 
-        # ── GET /api/logs ─────────────────────────────────────────────────────
+        # Logs query from SQLite
         if path == "/api/logs":
-            _maybe_auto_load()
-            data = _log_cache if _log_cache else DEMO_DATA
-
-            q = qget("q").strip().lower()
+            q = qget("q").strip()
             status_f = qget("status").lower()
             main_class_f = qget("main_class").lower()
+            domain_f = qget("auth_domain").lower()
             date_from = qget("date_from")
             date_to = qget("date_to")
-            domain_f = qget("auth_domain").lower()
-
-            filtered = []
-            for row in data:
-                if q and not any(q in str(v).lower() for v in row.values()):
-                    continue
-                if status_f and row.get("status", "") != status_f:
-                    continue
-                if main_class_f and row.get("main_class", "") != main_class_f:
-                    continue
-                if domain_f and domain_f not in row.get("auth_domain", "").lower():
-                    continue
-                if date_from and row.get("timestamp", "") < date_from:
-                    continue
-                if date_to and row.get("timestamp", "") > date_to + " 23:59:59":
-                    continue
-                filtered.append(row)
-
             sort_by = qget("sort", "timestamp")
             sort_dir = qget("dir", "desc")
-            reverse = sort_dir == "desc"
-            valid_cols = {
-                "message_id", "timestamp", "auth_domain", "auth_username",
-                "identity", "from", "to", "main_class", "subject", "status", "size",
-            }
-            if sort_by in valid_cols:
-                filtered.sort(key=lambda x: str(x.get(sort_by, "")), reverse=reverse)
-
-            total = len(filtered)
-            stats = {
-                "total": total,
-                "delivered": sum(1 for r in filtered if r.get("status") == "delivered"),
-                "sent": sum(1 for r in filtered if r.get("status") == "sent"),
-                "bounced": sum(1 for r in filtered if r.get("status") == "bounced"),
-                "deferred": sum(1 for r in filtered if r.get("status") == "deferred"),
-                "spam": sum(1 for r in filtered if r.get("main_class") == "spam"),
-            }
-            chart = _build_chart(filtered)
 
             try:
                 page = max(1, int(qget("page", "1")))
-            except ValueError:
-                page = 1
-            try:
                 per_page = min(500, max(1, int(qget("per_page", "50"))))
             except ValueError:
-                per_page = 50
+                page, per_page = 1, 50
+
+            rows, total, stats = db.query_emails(
+                q=q, status=status_f, main_class=main_class_f, auth_domain=domain_f,
+                date_from=date_from, date_to=date_to, sort_col=sort_by, sort_dir=sort_dir,
+                page=page, per_page=per_page
+            )
 
             total_pages = max(1, (total + per_page - 1) // per_page)
-            page = min(page, total_pages)
-            start = (page - 1) * per_page
-            rows = filtered[start:start + per_page]
-
             self._send_json({
                 "rows": rows,
                 "total": total,
@@ -448,52 +321,38 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 "per_page": per_page,
                 "total_pages": total_pages,
                 "stats": stats,
-                "chart": chart,
-                "is_demo": not bool(_log_cache),
+                "chart": [],
+                "is_demo": total == 0,
             })
             return
 
-        # ── GET /api/export/csv ───────────────────────────────────────────────
+        # Export CSV
         if path == "/api/export/csv":
-            _maybe_auto_load()
-            data = _log_cache if _log_cache else DEMO_DATA
+            rows, _, _ = db.query_emails(page=1, per_page=100000)
             output = io.StringIO()
-            cols = [
-                "message_id", "timestamp", "auth_domain", "auth_username",
-                "identity", "from", "to", "main_class", "subject", "status",
-                "relay", "reason", "size", "queue_id",
-            ]
+            cols = ["message_id", "timestamp", "auth_domain", "auth_username",
+                    "identity", "sender", "recipient", "main_class", "subject",
+                    "status", "relay", "reason", "size", "queue_id"]
             writer = csv.DictWriter(output, fieldnames=cols, extrasaction="ignore")
             writer.writeheader()
-            for row in data:
-                writer.writerow(row)
-            fname = f"mail_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            for r in rows:
+                writer.writerow(r)
+            fname = f"zimbra_mail_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             self._send_bytes(
                 output.getvalue().encode("utf-8"),
                 "text/csv; charset=utf-8",
-                extra_headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+                extra_headers={"Content-Disposition": f'attachment; filename="{fname}"'}
             )
-            return
-
-        # ── GET /api/stats/summary ────────────────────────────────────────────
-        if path == "/api/stats/summary":
-            _maybe_auto_load()
-            data = _log_cache if _log_cache else DEMO_DATA
-            self._send_json(_build_chart(data))
             return
 
         self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
-        global _log_cache, _manual_upload
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length", 0))
-        if length > 100 * 1024 * 1024:
-            self._send_json({"error": "Payload too large (max 100MB)"}, 413)
-            return
         body = self.rfile.read(length) if length > 0 else b""
 
-        # ── POST /api/login ───────────────────────────────────────────────────
+        # Login
         if path == "/api/login":
             try:
                 data = json.loads(body.decode("utf-8")) if body else {}
@@ -504,7 +363,6 @@ class TrackerHandler(BaseHTTPRequestHandler):
             expected_user = _runtime_cfg.get("username", "")
             expected_hash = _runtime_cfg.get("password_hash", "")
 
-            # If no auth configured, allow immediately
             if not expected_user or not expected_hash:
                 token = _create_session()
                 cookie = f"zmt_session={token}; Path=/; HttpOnly; SameSite=Lax"
@@ -520,52 +378,26 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": False, "error": "ACCESS DENIED: INVALID CREDENTIALS"}, 401)
             return
 
-        # ── Check Authentication for protected POST routes ────────────────────
         if not self._check_auth():
             self._send_json({"error": "Unauthorized"}, 401)
             return
 
-        # ── POST /api/upload ──────────────────────────────────────────────────
+        # Upload manual log
         if path == "/api/upload":
-            ctype = self.headers.get("Content-Type", "")
-            fname, payload = _parse_multipart_file(ctype, body)
-            if not payload:
-                self._send_json({"error": "No file uploaded"}, 400)
-                return
-            try:
-                content = payload.decode("utf-8", errors="ignore")
-                records = parse_log_content(content)
-                _log_cache = records
-                _manual_upload = True
-                self._send_json({"success": True, "count": len(records), "filename": fname})
-            except Exception as e:
-                self._send_json({"error": str(e)}, 500)
-            return
-
-        # ── POST /api/load-dir ────────────────────────────────────────────────
-        if path == "/api/load-dir":
-            try:
-                req = json.loads(body.decode("utf-8")) if body else {}
-            except Exception:
-                req = {}
-            log_dir = req.get("path", _runtime_cfg.get("log_dir", config.LOG_DIR))
-            if not os.path.isdir(log_dir):
-                self._send_json({"error": f"Directory not found: {log_dir}"}, 404)
-                return
-            try:
-                records = parse_log_directory(log_dir)
-                _log_cache = records
-                _manual_upload = False
-                self._send_json({"success": True, "count": len(records), "path": log_dir})
-            except Exception as e:
-                self._send_json({"error": str(e)}, 500)
-            return
-
-        # ── POST /api/clear ───────────────────────────────────────────────────
-        if path == "/api/clear":
-            _log_cache = []
-            _manual_upload = True
-            self._send_json({"success": True})
+            content_type = self.headers.get("Content-Type", "")
+            if "boundary=" in content_type:
+                boundary = content_type.split("boundary=")[1].strip().encode()
+                parts = body.split(b"--" + boundary)
+                for part in parts:
+                    if b"filename=" in part:
+                        header_end = part.find(b"\r\n\r\n")
+                        payload = part[header_end + 4:].rstrip(b"\r\n")
+                        text = payload.decode("utf-8", errors="ignore")
+                        records = parse_log_content(text)
+                        count = db.insert_records(records)
+                        self._send_json({"success": True, "count": count})
+                        return
+            self._send_json({"error": "Upload failed"}, 400)
             return
 
         self._send_json({"error": "Not found"}, 404)
@@ -589,9 +421,7 @@ def run_server():
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[*] Shutting down...")
         httpd.server_close()
-
 
 if __name__ == "__main__":
     run_server()
