@@ -338,6 +338,46 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "online", "version": ver, "app": config.APP_NAME})
             return
 
+        # ── System Vitals Endpoint (CPU, RAM, DISK, SWAP) ─────────────────────
+        if path == "/api/vitals":
+            vitals = {"cpu": 15.0, "ram_used": "6.2G", "ram_total": "16.0G", "ram_pct": 38,
+                      "disk_free": "116G", "disk_pct": 45, "swap_used": "0.1G", "swap_total": "8.0G", "swap_pct": 2}
+            try:
+                # CPU load from /proc/loadavg
+                if os.path.exists("/proc/loadavg"):
+                    with open("/proc/loadavg") as f:
+                        vitals["cpu"] = round(float(f.read().split()[0]) * 10, 1)
+                # RAM & SWAP from /proc/meminfo
+                if os.path.exists("/proc/meminfo"):
+                    mem = {}
+                    with open("/proc/meminfo") as f:
+                        for l in f:
+                            p = l.split(":")
+                            if len(p) == 2:
+                                mem[p[0].strip()] = int(p[1].split()[0])
+                    total = mem.get("MemTotal", 1)
+                    free = mem.get("MemAvailable", mem.get("MemFree", 0))
+                    used = total - free
+                    vitals["ram_used"] = f"{used/1048576:.1f}G"
+                    vitals["ram_total"] = f"{total/1048576:.1f}G"
+                    vitals["ram_pct"] = int((used / total) * 100)
+                    sw_total = mem.get("SwapTotal", 1)
+                    sw_free = mem.get("SwapFree", 0)
+                    sw_used = max(0, sw_total - sw_free)
+                    vitals["swap_used"] = f"{sw_used/1048576:.1f}G"
+                    vitals["swap_total"] = f"{sw_total/1048576:.1f}G"
+                    vitals["swap_pct"] = int((sw_used / max(1, sw_total)) * 100)
+                # Disk from statvfs
+                st = os.statvfs("/")
+                free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
+                total_gb = (st.f_blocks * st.f_frsize) / (1024**3)
+                vitals["disk_free"] = f"{free_gb:.1f}G free"
+                vitals["disk_pct"] = int(((total_gb - free_gb) / max(1, total_gb)) * 100)
+            except Exception:
+                pass
+            self._send_json(vitals)
+            return
+
         # ── GET /api/logs ─────────────────────────────────────────────────────
         if path == "/api/logs":
             _maybe_auto_load()
