@@ -196,6 +196,24 @@ def stream_parse_log(filepath: str, start_offset: int = 0, batch_size: int = 100
                 })
                 continue
 
+            # Capture Subject before the spam rule because Amavis lines often
+            # contain both "Hits:" and "Subject:" on the same log line.
+            m = RE_SUBJECT_AMAVIS.search(line)
+            if m:
+                subject = m.group("subject").strip()
+                qmatch = RE_AMAVIS_QUEUE_ID.search(line)
+                qid = qmatch.group("queue_id") if qmatch else ""
+                if qid and qid in queue_data:
+                    queue_data[qid]["subject"] = subject
+                else:
+                    mmatch = RE_AMAVIS_MESSAGE_ID.search(line)
+                    if mmatch:
+                        msgid = mmatch.group("message_id").strip()
+                        for item in queue_data.values():
+                            if item.get("message_id", "").strip("<>") == msgid:
+                                item["subject"] = subject
+                continue
+
             m = RE_SPAM.search(line)
             if m:
                 qid = m.group("queue_id")
@@ -205,11 +223,6 @@ def stream_parse_log(filepath: str, start_offset: int = 0, batch_size: int = 100
                     queue_data[qid]["main_class"] = "spam" if hits >= tag2 else "not-spam"
                 except Exception:
                     pass
-                continue
-
-            m = RE_SUBJECT_AMAVIS.search(line)
-            if m:
-                queue_data["__subj__"]["subject"] = m.group("subject").strip()
                 continue
 
             # Check if queue has enough completed records to flush
