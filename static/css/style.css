@@ -995,3 +995,26 @@ input[type=checkbox] {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
   .header-meta { display: none; }
 }
+
+
+/* ── TABLE VISIBILITY FIX ─────────────────────────────────────
+   Prevent the flex column layout from collapsing the log table.
+   The content area and table section must be allowed to shrink,
+   while the table itself keeps a usable minimum height.
+   ──────────────────────────────────────────────────────────── */
+.main-wrapper { min-height: 0; }
+.content { min-height: 0; }
+.table-section {
+  flex: 1 1 auto;
+  min-height: 280px;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+.data-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.pagination { flex: 0 0 auto; }
