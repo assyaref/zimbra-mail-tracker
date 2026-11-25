@@ -286,7 +286,7 @@ def parse_log_directory(log_dir: str, max_files: int = 10) -> list:
     all_results = []
     files = []
     for fname in os.listdir(log_dir):
-        if re.match(r"mail(log|\.log).*", fname, re.IGNORECASE):
+        if re.match(r"(?:zimbra\.log|mail(?:log|\.log)).*", fname, re.IGNORECASE):
             files.append(os.path.join(log_dir, fname))
 
     files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
