@@ -423,10 +423,6 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": False, "error": "ACCESS DENIED: INVALID CREDENTIALS"}, 401)
             return
 
-        if not self._check_auth():
-            self._send_json({"error": "Unauthorized"}, 401)
-            return
-
         # VPS diagnostic agent: authenticated with a dedicated root-only token.
         if path == "/api/doctor/report":
             supplied = self.headers.get("X-ZMT-Doctor-Token", "")
@@ -453,6 +449,10 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 self._send_json({"success": True, "checked_at": report["checked_at"]})
             except (ValueError, OSError) as exc:
                 self._send_json({"error": f"Invalid report: {exc}"}, 400)
+            return
+
+        if not self._check_auth():
+            self._send_json({"error": "Unauthorized"}, 401)
             return
 
         # Upload manual log
