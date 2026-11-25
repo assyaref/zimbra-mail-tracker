@@ -545,9 +545,46 @@ function openDetail(row) {
   modal.classList.add('show');
 }
 
+// ── ZMT Doctor ─────────────────────────────────────────────
+async function loadDoctorReport() {
+  const summary = document.getElementById('doctor-summary');
+  const checks = document.getElementById('doctor-checks');
+  if (!summary || !checks) return;
+  try {
+    const res = await fetch('/api/doctor/latest', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const payload = await res.json();
+    const report = payload.report;
+    if (!report) {
+      summary.textContent = 'Belum ada laporan. Jalankan sudo zmt-doctor di VPS.';
+      checks.innerHTML = '<div style="font-size:10px;color:var(--muted);">Laporan akan muncul otomatis setelah script mengirim hasil pemeriksaan.</div>';
+      return;
+    }
+    const overall = String(report.overall || 'UNKNOWN').toUpperCase();
+    const color = overall === 'PASS' ? 'var(--green)' : overall === 'CRITICAL' ? 'var(--red)' : 'var(--amber)';
+    summary.innerHTML = '<span style="color:' + color + ';font-weight:bold;">' + esc(overall) + '</span> · ' +
+      esc(report.hostname || 'VPS') + ' · Pemeriksaan: ' + esc(report.checked_at || '—');
+    checks.innerHTML = (report.checks || []).map(item => {
+      const status = String(item.status || 'UNKNOWN').toUpperCase();
+      const itemColor = status === 'PASS' ? 'var(--green)' : status === 'FAIL' ? 'var(--red)' : 'var(--amber)';
+      return '<div style="padding:9px;background:#041508;border:1px solid var(--border);border-radius:3px;min-width:0;">' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;font-size:10px;">' +
+        '<strong style="color:#c8f5d4;">' + esc(item.name || 'Check') + '</strong>' +
+        '<span style="color:' + itemColor + ';font-weight:bold;">' + esc(status) + '</span></div>' +
+        '<div style="font-size:10px;color:var(--muted);margin-top:5px;overflow-wrap:anywhere;">' + esc(item.detail || '') + '</div></div>';
+    }).join('') || '<div style="font-size:10px;color:var(--muted);">Tidak ada item pemeriksaan.</div>';
+  } catch (err) {
+    summary.textContent = 'Gagal mengambil laporan: ' + err.message;
+  }
+}
+
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   buildColChooser();
+
+  const doctorRefresh = document.getElementById('doctor-refresh-btn');
+  if (doctorRefresh) doctorRefresh.addEventListener('click', loadDoctorReport);
+  loadDoctorReport();
 
   // Search
   let searchTimer;
