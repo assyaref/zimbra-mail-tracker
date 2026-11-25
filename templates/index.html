@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ZIMBRA MAIL TRACKER — INTEL SYSTEM</title>
+<link rel="stylesheet" href="/static/css/style.css"/>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>"/>
+</head>
+<body>
+
+<!-- ══ HEADER ════════════════════════════════════════════ -->
+<header class="header">
+  <div class="header-inner">
+    <div class="header-logo">
+      <div class="logo-emblem">ZMT<br/>INTEL</div>
+      <div class="logo-text">
+        <h1>{{ config.APP_NAME }}</h1>
+        <div class="subtitle">{{ config.APP_SUBTITLE }}</div>
+      </div>
+    </div>
+
+    <div class="header-meta">
+      <div class="meta-block">
+        SYSTEM<span>ONLINE</span>
+      </div>
+      <div class="meta-block">
+        CLASSIFICATION<span>{{ config.CLASSIFICATION }}</span>
+      </div>
+      <div class="meta-block">
+        VERSION<span>{{ config.APP_VERSION }}</span>
+      </div>
+      <div class="classified-badge">⬛ CONFIDENTIAL</div>
+      <div class="clock-display" id="clock">00:00:00</div>
+    </div>
+  </div>
+</header>
+
+<!-- ══ TICKER ════════════════════════════════════════════ -->
+<div class="ticker-bar">
+  <span class="ticker-inner">
+    ◈ ZIMBRA MAIL TRACKER ACTIVE &nbsp;◈&nbsp; MONITORING ACTIVE &nbsp;◈&nbsp;
+    ALL CONNECTIONS LOGGED &nbsp;◈&nbsp; UNAUTHORIZED ACCESS PROHIBITED &nbsp;◈&nbsp;
+    THIS SYSTEM IS PROTECTED UNDER FEDERAL LAW &nbsp;◈&nbsp;
+    MAIL SURVEILLANCE SYSTEM v2.0 &nbsp;◈&nbsp; REAL-TIME LOG ANALYSIS ENGINE &nbsp;◈&nbsp;
+    POSTFIX / ZIMBRA / AMAVIS PARSER ACTIVE &nbsp;◈&nbsp; DATA ENCRYPTED IN TRANSIT &nbsp;◈&nbsp;
+    USE AUTHORIZED CREDENTIALS ONLY &nbsp;◈&nbsp; SYSTEM UPTIME: NOMINAL &nbsp;◈&nbsp;
+  </span>
+</div>
+
+<!-- ══ MAIN ═══════════════════════════════════════════════ -->
+<div class="main-wrapper">
+
+  <!-- ── SIDEBAR ─────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">navigation</div>
+      <button class="nav-btn active">
+        <span class="nav-icon">📡</span> Mail Tracker
+      </button>
+      <button class="nav-btn">
+        <span class="nav-icon">📊</span> Statistics
+      </button>
+      <button class="nav-btn">
+        <span class="nav-icon">🚨</span> Alerts
+      </button>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-label">intel summary</div>
+      <div class="stat-mini">
+        <div class="stat-mini-label">TOTAL RECORDS</div>
+        <div class="stat-mini-val" id="side-total">—</div>
+      </div>
+      <div class="stat-mini">
+        <div class="stat-mini-label">BOUNCED</div>
+        <div class="stat-mini-val red" id="side-bounced">—</div>
+      </div>
+      <div class="stat-mini">
+        <div class="stat-mini-label">DEFERRED</div>
+        <div class="stat-mini-val amber" id="side-deferred">—</div>
+      </div>
+      <div class="stat-mini">
+        <div class="stat-mini-label">SPAM DETECTED</div>
+        <div class="stat-mini-val blue" id="side-spam">—</div>
+      </div>
+    </div>
+
+    <div class="sidebar-status">
+      <span class="status-dot"></span>SYSTEM ACTIVE<br/>
+      <span style="font-size:9px;display:block;margin-top:4px;letter-spacing:1px">
+        {{ config.AGENCY_CODE }}
+      </span>
+    </div>
+  </aside>
+
+  <!-- ── CONTENT ──────────────────────────────────────── -->
+  <main class="content">
+
+    <!-- STAT CARDS -->
+    <div class="stats-row">
+      <div class="stat-card c-green">
+        <div class="stat-card-label">TOTAL EMAILS</div>
+        <div class="stat-card-value" id="stat-total">—</div>
+        <div class="stat-card-sub">all records</div>
+      </div>
+      <div class="stat-card c-blue">
+        <div class="stat-card-label">DELIVERED</div>
+        <div class="stat-card-value" id="stat-delivered">—</div>
+        <div class="stat-card-sub">sent + delivered</div>
+      </div>
+      <div class="stat-card c-red">
+        <div class="stat-card-label">BOUNCED</div>
+        <div class="stat-card-value" id="stat-bounced">—</div>
+        <div class="stat-card-sub">failed delivery</div>
+      </div>
+      <div class="stat-card c-amber">
+        <div class="stat-card-label">DEFERRED</div>
+        <div class="stat-card-value" id="stat-deferred">—</div>
+        <div class="stat-card-sub">retry queue</div>
+      </div>
+      <div class="stat-card c-purple">
+        <div class="stat-card-label">SPAM</div>
+        <div class="stat-card-value" id="stat-spam">—</div>
+        <div class="stat-card-sub">detected threats</div>
+      </div>
+    </div>
+
+    <!-- CHART -->
+    <div class="chart-section">
+      <div class="chart-header">
+        <span class="chart-title">▸ TRAFFIC ANALYSIS — LAST 7 DAYS</span>
+        <div class="chart-legend">
+          <span><span class="legend-dot" style="background:#00ff41"></span>Delivered</span>
+          <span><span class="legend-dot" style="background:#ff2020"></span>Bounced</span>
+          <span><span class="legend-dot" style="background:#cc44ff"></span>Spam</span>
+        </div>
+      </div>
+      <canvas id="chart-canvas"></canvas>
+    </div>
+
+    <!-- TOOLBAR -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <!-- Search -->
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="search-input" placeholder="Search: sender, recipient, subject, ID…"/>
+        </div>
+
+        <!-- Status filter -->
+        <select class="tb-select" id="status-filter">
+          <option value="">All Status</option>
+          <option value="delivered">Delivered</option>
+          <option value="sent">Sent</option>
+          <option value="bounced">Bounced</option>
+          <option value="deferred">Deferred</option>
+        </select>
+
+        <!-- Main class filter -->
+        <select class="tb-select" id="class-filter">
+          <option value="">All Class</option>
+          <option value="not-spam">Not Spam</option>
+          <option value="spam">Spam</option>
+        </select>
+
+        <!-- Show Results -->
+        <button class="tb-btn-primary" id="show-results-btn">◈ SHOW RESULTS</button>
+      </div>
+
+      <div class="toolbar-right">
+        <!-- Upload -->
+        <button class="tb-btn" id="upload-btn">⬆ Upload Log</button>
+        <button class="tb-btn" id="load-dir-btn">📁 Load Dir</button>
+        <button class="tb-btn" id="export-btn">⬇ Export CSV</button>
+        <button class="tb-btn-danger" id="clear-btn">✕ Clear</button>
+      </div>
+    </div>
+
+    <!-- Upload Zone -->
+    <div class="upload-zone" id="upload-zone">
+      <span>DROP LOG FILE HERE OR:</span>
+      <label class="tb-btn" style="cursor:pointer">
+        📂 CHOOSE FILE
+        <input type="file" id="file-input" accept=".log,.gz,.txt" style="display:none"/>
+      </label>
+      <span style="font-size:10px;color:var(--muted)">Accepts: maillog, mail.log, .gz</span>
+    </div>
+
+    <!-- TABLE ACTION BAR -->
+    <div class="table-action-bar">
+      <div class="action-bar-left">
+        <span id="demo-badge" class="demo-badge" style="display:none">⚠ DEMO DATA</span>
+        <span id="selection-info" style="color:var(--green-dim);font-size:10px"></span>
+      </div>
+      <div class="action-bar-right">
+        <div class="per-page-ctrl">
+          ITEMS PER PAGE:
+          <input type="number" id="per-page-input" value="50" min="10" max="500"/>
+          <button class="reset-icon" id="per-page-reset" title="Reset to 50">↺</button>
+        </div>
+
+        <!-- Choose Column -->
+        <div class="col-chooser">
+          <button class="col-chooser-btn" id="col-chooser-btn">
+            ⚙ Choose Column <span>▾</span>
+          </button>
+          <div class="col-chooser-menu" id="col-chooser-menu"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DATA TABLE -->
+    <div class="table-section">
+      <div class="data-table-wrap">
+        <table>
+          <thead>
+            <tr id="log-thead-row"></tr>
+          </thead>
+          <tbody id="log-tbody">
+            <tr><td colspan="12">
+              <div class="empty-state">
+                <div class="empty-state-icon">📡</div>
+                <div class="empty-state-title">INITIALIZING...</div>
+              </div>
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- PAGINATION -->
+      <div class="pagination">
+        <div class="pagination-info" id="pag-info">Loading…</div>
+        <div class="page-controls" id="pag-controls"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ══ DETAIL MODAL ══════════════════════════════════════ -->
+<div class="modal-overlay" id="detail-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span>◈ MESSAGE DETAIL — INTELLIGENCE RECORD</span>
+      <button class="modal-close" id="modal-close">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<!-- ══ LOADING ═══════════════════════════════════════════ -->
+<div class="loading-overlay" id="loading-overlay">
+  <div class="loading-box">
+    <div class="loading-spinner"></div>
+    <div class="loading-title">INTEL SYSTEM</div>
+    <div class="loading-text" id="loading-text">PROCESSING...</div>
+  </div>
+</div>
+
+<!-- ══ TOAST ══════════════════════════════════════════════ -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
