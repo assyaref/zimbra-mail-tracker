@@ -1084,6 +1084,66 @@ function initFirewall() {
   });
 }
 
+// ── Rekomendasi penanganan alert ───────────────────────────
+function renderAdvice(a) {
+  const ad = a.advice;
+  if (!ad || !(ad.steps || []).length) return '';
+  const open = a.severity === 'critical' || a.severity === 'high' ? ' open' : '';
+  const steps = ad.steps.map(st => `<li><div class="adv-text">${esc(st.text)}</div>${st.cmd
+      ? `<div class="adv-cmd"><pre>${esc(st.cmd)}</pre><button type="button" class="adv-copy" title="Salin perintah">⧉ SALIN</button></div>` : ''}</li>`).join('');
+  const acts = (ad.actions || []).map(x => `<button type="button" class="tb-btn adv-act" data-type="${esc(x.type)}" data-value="${esc(x.value || '')}">${esc(x.label)}</button>`).join('');
+  return `<details class="alert-advice"${open}><summary>Rekomendasi penanganan</summary>
+    ${ad.summary ? `<div class="adv-summary">${esc(ad.summary)}</div>` : ''}
+    <ol class="adv-steps">${steps}</ol>
+    <div class="adv-foot">${acts}<span class="dmuted">Perintah hanya ditampilkan; jalankan sendiri sebagai root setelah ditinjau.</span></div>
+  </details>`;
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (e) {
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (_) {}
+    ta.remove(); return ok;
+  }
+}
+
+function adviceAction(type, value, btn) {
+  if (type === 'firewall') {
+    const p = document.getElementById('fw-panel');
+    if (p) { p.scrollIntoView({ behavior: 'smooth', block: 'start' }); p.classList.add('flash'); setTimeout(() => p.classList.remove('flash'), 1500); }
+  } else if (type === 'search' || type === 'status') {
+    Object.assign(state, { search: '', statusFilter: '', page: 1 });
+    if (type === 'search') state.search = value; else state.statusFilter = value;
+    document.getElementById('search-input').value = state.search;
+    document.getElementById('status-filter').value = state.statusFilter;
+    showView('tracker');
+    load();
+  } else if (type === 'view') {
+    showView(value);
+  } else if (type === 'limits') {
+    showView('tracker');
+    setTimeout(() => { const b = document.getElementById('limits-edit-btn'); if (b && !b.hidden) b.click(); else document.getElementById('limits-panel').scrollIntoView({ behavior: 'smooth' }); }, 100);
+  } else if (type === 'sync') {
+    syncNow(btn);
+  }
+}
+
+function initAdvice() {
+  document.getElementById('alerts-list').addEventListener('click', async (e) => {
+    const cp = e.target.closest('.adv-copy');
+    if (cp) {
+      const ok = await copyText(cp.previousElementSibling.textContent);
+      cp.textContent = ok ? '✓ TERSALIN' : 'GAGAL';
+      setTimeout(() => { cp.textContent = '⧉ SALIN'; }, 1500);
+      return;
+    }
+    const act = e.target.closest('.adv-act');
+    if (act) adviceAction(act.dataset.type, act.dataset.value, act);
+  });
+}
+
 // ── Views: Mail Tracker / Statistics / Alerts ──────────────
 const VIEWS = ['tracker', 'stats', 'alerts'];
 let _statsDays = 30;
@@ -1149,7 +1209,7 @@ async function loadStats() {
   document.getElementById('stats-failures').innerHTML = fc.length ? `<table class="mini-table">
       <colgroup><col><col style="width:70px"><col style="width:70px"></colgroup>
       <thead><tr><th>Kategori</th><th class="num">Bounced</th><th class="num">Deferred</th></tr></thead>
-      <tbody>${fc.map(c => `<tr title="${esc(c.example)}"><td class="wrap">${esc(c.category)}<div class="row-reason dmuted">${esc(c.example)}</div></td>
+      <tbody>${fc.map(c => `<tr title="${esc(c.example)}"><td class="wrap">${esc(c.category)}<div class="row-reason dmuted">${esc(c.example)}</div>${c.tip ? `<div class="row-tip">→ ${esc(c.tip)}</div>` : ''}</td>
         <td class="num ${c.bounced ? 'txt-red' : ''}">${fmtNum(c.bounced)}</td><td class="num ${c.deferred ? 'txt-amber' : ''}">${fmtNum(c.deferred)}</td></tr>`).join('')}</tbody></table>`
     : '<div class="dnote">Tidak ada kegagalan pengiriman. 👍</div>';
   document.getElementById('stats-top-senders').innerHTML = rankList(d.top_senders);
@@ -1197,7 +1257,8 @@ async function loadAlerts(badgeOnly = false) {
     const [lbl, cls] = SEV[a.severity] || ['INFO', 'sev-info'];
     return `<div class="alert-card ${cls}"><span class="sev">${lbl}</span>
       <div class="alert-body"><div class="alert-title">${esc(a.title)}</div><div class="alert-detail">${esc(a.detail)}</div></div>
-      ${a.count !== null && a.count !== undefined ? `<span class="alert-count">${fmtNum(a.count)}</span>` : ''}</div>`;
+      ${a.count !== null && a.count !== undefined ? `<span class="alert-count">${fmtNum(a.count)}</span>` : '<span></span>'}
+      ${renderAdvice(a)}</div>`;
   }).join('') : `<div class="alert-card sev-ok"><span class="sev">OK</span><div class="alert-body"><div class="alert-title">Semua normal</div><div class="alert-detail">Tidak ada kondisi yang melewati ambang batas.</div></div></div>`;
 
   const ev = d.daily_events || [];
@@ -1230,7 +1291,7 @@ async function loadAlerts(badgeOnly = false) {
       <thead><tr><th>Waktu</th><th>Pengirim → Penerima</th><th>Status</th><th>Kategori</th></tr></thead>
       <tbody>${fl.map(r => `<tr title="${esc(r.reason)}"><td class="dmuted nowrap">${esc(r.timestamp)}</td>
         <td class="wrap">${esc(r.sender || '<>')} → ${esc(r.recipient)}<div class="row-reason">${esc(r.reason)}</div></td>
-        <td>${statusBadge(r.status)}</td><td class="wrap">${esc(r.category)}</td></tr>`).join('')}</tbody></table>` : '<div class="dnote">Tidak ada.</div>';
+        <td>${statusBadge(r.status)}</td><td class="wrap">${esc(r.category)}${r.tip ? `<div class="row-reason dmuted">${esc(r.tip)}</div>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="dnote">Tidak ada.</div>';
 }
 
 function initViews() {
@@ -1242,6 +1303,7 @@ function initViews() {
   }));
   document.getElementById('alerts-refresh-btn').addEventListener('click', () => { loadAlerts(); loadFirewall(); });
   initFirewall();
+  initAdvice();
   window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'tracker'));
   let rt;
   window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => {

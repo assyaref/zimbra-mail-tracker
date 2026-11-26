@@ -812,7 +812,9 @@ def stats_overview(days=30, local_domains=None):
         e[r["status"]] += 1
         examples.setdefault(c, (r["reason"] or "")[:160])
     failure_categories = sorted(cats.values(), key=lambda x: -(x["bounced"] + x["deferred"]))
+    import alert_advice
     for c in failure_categories:
+        c["tip"] = alert_advice.category_tip(c["category"])
         c["example"] = examples.get(c["category"], "")
 
     att = conn.execute("""
@@ -848,26 +850,34 @@ def compute_alerts(thresholds=None, sync_status=None, message_limit=None):
     conn = get_db()
     alerts = []
 
-    def add(sev, code, title, detail, count=None):
-        alerts.append({"severity": sev, "code": code, "title": title, "detail": detail, "count": count})
+    def add(sev, code, title, detail, count=None, ctx=None):
+        import alert_advice
+        alerts.append({"severity": sev, "code": code, "title": title, "detail": detail, "count": count,
+                       "advice": alert_advice.advice_for(code, ctx)})
 
     inj24 = conn.execute("SELECT COUNT(*), COUNT(DISTINCT ip), MAX(ts) FROM security_events WHERE kind='log_injection' AND ts >= datetime('now','localtime','-1 day')").fetchone()
     if inj24[0]:
+        inj_ips = [r[0] for r in conn.execute("""SELECT ip FROM security_events WHERE kind='log_injection' AND ip <> ''
+                       AND ts >= datetime('now','localtime','-1 day') GROUP BY ip ORDER BY COUNT(*) DESC LIMIT 5""")]
         add("critical", "log_injection", "Percobaan injeksi log (CVE-2026-73570)",
-            f"{inj24[0]} baris dari {inj24[1]} IP dalam 24 jam; terakhir {inj24[2]}. Watcher sudah di-hardening.", inj24[0])
-    sasl = conn.execute("""SELECT ip, COUNT(*) AS n, COUNT(DISTINCT detail) AS users, MAX(ts) AS last
+            f"{inj24[0]} baris dari {inj24[1]} IP dalam 24 jam; terakhir {inj24[2]}. Watcher sudah di-hardening.", inj24[0],
+            {"ips": inj_ips})
+    sasl = conn.execute("""SELECT ip, COUNT(*) AS n, COUNT(DISTINCT detail) AS users, MAX(ts) AS last,
+                                  group_concat(DISTINCT detail) AS user_list
                            FROM security_events WHERE kind='sasl_fail' AND ts >= datetime('now','localtime','-1 day')
                            GROUP BY ip HAVING n >= ? ORDER BY n DESC LIMIT 5""", (t["sasl_fail_ip_24h"],)).fetchall()
     for r in sasl:
         add("high", "sasl_bruteforce", f"Brute-force login SMTP dari {r['ip']}",
-            f"{r['n']} kegagalan SASL, {r['users']} username berbeda dalam 24 jam; terakhir {r['last']}.", r["n"])
+            f"{r['n']} kegagalan SASL, {r['users']} username berbeda dalam 24 jam; terakhir {r['last']}.", r["n"],
+            {"ip": r["ip"], "users": (r["user_list"] or "").split(",")})
 
     hv = conn.execute(f"""SELECT sender, COUNT(DISTINCT message_id) AS n FROM emails
                           WHERE timestamp >= datetime('now','localtime','-1 hour') AND NOT {INTERNAL_HOP_SQL} AND sender <> ''
                           GROUP BY sender HAVING n >= ? ORDER BY n DESC LIMIT 5""", (t["sender_msgs_1h"],)).fetchall()
     for r in hv:
         add("high", "high_volume_sender", f"Volume kirim tinggi: {r['sender']}",
-            f"{r['n']} pesan dalam 1 jam terakhir (ambang {t['sender_msgs_1h']}). Periksa kemungkinan akun disusupi.", r["n"])
+            f"{r['n']} pesan dalam 1 jam terakhir (ambang {t['sender_msgs_1h']}). Periksa kemungkinan akun disusupi.", r["n"],
+            {"sender": r["sender"]})
 
     today = conn.execute(f"SELECT SUM(status='bounced') FROM emails WHERE date(timestamp)=date('now','localtime') AND NOT {INTERNAL_HOP_SQL}").fetchone()[0] or 0
     avg = conn.execute(f"""SELECT AVG(n) FROM (SELECT date(timestamp) d, SUM(status='bounced') n FROM emails
@@ -920,8 +930,10 @@ def compute_alerts(thresholds=None, sync_status=None, message_limit=None):
                                                        WHERE ts >= date('now','localtime','-13 days') GROUP BY date ORDER BY date""")]
     recent_failures = [dict(r) for r in conn.execute(f"""SELECT timestamp, sender, recipient, status, reason FROM emails
                           WHERE status IN ('bounced','deferred') AND NOT {INTERNAL_HOP_SQL} ORDER BY timestamp DESC LIMIT 15""")]
+    import alert_advice
     for r in recent_failures:
         r["category"] = categorize_reason(r["reason"])
+        r["tip"] = alert_advice.category_tip(r["category"])
     conn.close()
     order = {"critical": 0, "high": 1, "medium": 2, "info": 3}
     alerts.sort(key=lambda a: order.get(a["severity"], 9))

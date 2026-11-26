@@ -239,5 +239,27 @@ check("fw: enable runs ufw --force enable and cancels timer", ok_ and any(c[-3:]
 FW._run = _orig
 db.add_firewall_audit("tester", "127.0.0.1", "ufw", "disable", 15, True, ["x"])
 check("fw: audit stored and listed", db.list_firewall_audit(3)[0]["minutes"] == 15)
+# 13) Alert handling recommendations
+import alert_advice as AA
+own = {"203.0.113.250"}
+check("advice: never block loopback / LAN / own IP / junk", all(AA.blockable_ip(x, own) is None for x in
+      ["127.0.0.1", "10.20.0.5", "192.168.1.1", "::1", "203.0.113.250", "1.2.3.4; rm -rf /", "", None]))
+check("advice: public IP blockable", AA.blockable_ip("8.8.8.8", own) == "8.8.8.8")
+_own = AA._own_ips; AA._own_ips = lambda: set()
+adv = AA.advice_for("log_injection", {"ips": ["127.0.0.1", "8.8.4.4", "$(id)"]})
+blk = [x["cmd"] for x in adv["steps"] if x.get("cmd", "").startswith("ufw")]
+check("advice: injection block cmd lists only public IP", blk == ["ufw prepend deny from 8.8.4.4"])
+adv = AA.advice_for("sasl_bruteforce", {"ip": "8.8.4.4", "users": ["a@ex.com", "x'; rm -rf / #@e"]})
+txt = " ".join(x["text"] + x.get("cmd", "") for x in adv["steps"])
+check("advice: brute-force uses IP, drops malformed username", "banip 8.8.4.4" in txt and "rm -rf" not in txt and "a@ex.com" in txt)
+adv = AA.advice_for("high_volume_sender", {"sender": "bad'$(id)@ex.com"})
+check("advice: malformed sender never reaches a command", all("$(id)" not in x.get("cmd", "") for x in adv["steps"]) and adv["actions"][0]["value"] == "")
+AA._own_ips = _own
+codes = ["log_injection", "sasl_bruteforce", "high_volume_sender", "bounce_spike", "deferred_backlog", "deferred_pending",
+         "size_rejects", "near_size_limit", "sync_stale", "sync_error"]
+check("advice: every alert code has steps", all(AA.advice_for(c, {})["steps"] for c in codes))
+check("advice: alerts carry advice", all(a.get("advice") for a in db.compute_alerts({"sasl_fail_ip_24h": 1})["alerts"]))
+check("advice: category tips", AA.category_tip("Mailbox penuh").startswith("Kotak") and AA.category_tip("Error transport lokal (cek akun/transport)").startswith("Konfigurasi")
+      and AA.category_tip("xyz").startswith("Baca"))
 print(f"\nRESULT: {ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)
