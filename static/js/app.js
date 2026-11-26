@@ -1144,6 +1144,88 @@ function initAdvice() {
   });
 }
 
+// ── Cek versi Zimbra ───────────────────────────────────────
+const ZV_STATE = {
+  current: ['TERBARU', 'zv-ok', 'Versi terpasang adalah rilis terbaru di lini ini.'],
+  outdated: ['ADA UPDATE', 'zv-warn', ''],
+  unknown: ['TIDAK DIKETAHUI', 'zv-unk', 'Rilis terbaru tidak bisa dicek.'],
+};
+
+function zvSide(v) {
+  const ins = (v && v.installed) || {};
+  const r = (v && v.remote) || {};
+  document.getElementById('zv-side-ver').textContent = ins.version ? `${ins.version} ${ins.type || ''}` : '—';
+  const st = document.getElementById('zv-side-state');
+  if (!v) { st.textContent = ''; st.className = 'zv-side-state'; return; }
+  const [lbl, cls] = ZV_STATE[r.status] || ZV_STATE.unknown;
+  st.textContent = r.status === 'outdated' ? `${lbl}: ${r.latest_in_line}` : lbl;
+  st.className = 'zv-side-state ' + cls;
+}
+
+function zvRender(v, fresh) {
+  const b = document.getElementById('zv-body');
+  if (!v) { b.innerHTML = '<div class="dnote">Belum ada hasil.</div>'; return; }
+  const ins = v.installed || {}, r = v.remote || {}, h = v.hardening || {};
+  const [lbl, cls, note] = ZV_STATE[r.status] || ZV_STATE.unknown;
+  const row = (k, val) => `<div class="zv-row"><span class="zv-k">${k}</span><span class="zv-v">${val}</span></div>`;
+  const okBad = (ok, good, bad) => ok === null || ok === undefined ? '<span class="dmuted">tidak terbaca</span>'
+    : ok ? `<span class="fw-ok">✓ ${good}</span>` : `<span class="fw-fail">✕ ${bad}</span>`;
+  let html = `<div class="zv-hero ${cls}"><div><div class="zv-k">TERPASANG</div><div class="zv-big">${esc(ins.version || '—')}</div>
+      <div class="dmuted">${esc([ins.type, ins.build && 'build ' + ins.build, ins.edition, ins.platform].filter(Boolean).join(' · '))}</div></div>
+    <div class="zv-arrow">→</div>
+    <div><div class="zv-k">TERBARU (LINI ${esc((ins.version || '').split('.').slice(0, 2).join('.') || '—')})</div><div class="zv-big">${esc(r.latest_in_line || '—')}</div>
+      <span class="fw-state ${cls === 'zv-ok' ? 'on' : 'off'}">${lbl}</span></div></div>`;
+  if (r.status === 'outdated') {
+    html += `<div class="lf-warnings"><div>⚠ Tertinggal <b>${r.behind}</b> patch release. Baca catatan rilis (berisi perbaikan keamanan):</div>
+      ${(r.release_notes || []).map(n => `<div>→ <a class="zv-link" href="${esc(n.url)}" target="_blank" rel="noopener noreferrer">Zimbra ${esc(n.version)} release notes ↗</a></div>`).join('')}
+      <div>Upgrade memerlukan restart layanan Zimbra (jadwalkan maintenance) dan menimpa <code>swatchrc.in</code>: pasang ulang hardening setelahnya.</div></div>`;
+  } else if (note) {
+    html += `<div class="${cls === 'zv-ok' ? 'lf-preview' : 'lf-warnings'}">${esc(note)}${r.error ? ' ' + esc(r.error) : ''}</div>`;
+  }
+  if (r.newer_major) html += `<div class="lf-intro">Ada lini rilis lebih baru: <b>${esc(r.newer_major)}</b> (upgrade mayor, uji dulu di staging).</div>`;
+  html += `<div class="zv-rows">
+    ${row('Paket Zimbra', ins.mixed ? `<span class="fw-fail">✕ versi campur: ${esc(Object.keys(ins.package_versions || {}).join(', '))}</span>`
+                                    : `<span class="fw-ok">✓ ${fmtNum(ins.packages_core || 0)} paket inti seragam</span> <span class="dmuted">(${fmtNum(ins.packages_total || 0)} paket zimbra-*)</span>`)}
+    ${row('Hardening swatchrc.in', okBad(h.swatchrc_hardened, 'terpasang', 'HILANG, pasang ulang (lihat laporan remediasi)'))}
+    ${row('snmp_notify', h.snmp_notify === null || h.snmp_notify === undefined ? '<span class="dmuted">tidak terbaca</span>'
+          : okBad(h.snmp_notify === 'no', 'no', esc(h.snmp_notify) + ' (sebaiknya no)'))}
+    ${row('Sumber rilis', esc(r.source || '—'))}
+    ${row('Dicek', `${esc(v.checked_at || '—')} <span class="dmuted">(${fresh ? 'baru' : 'cache'}, ${v.seconds ?? '?'} dtk)</span>`)}
+  </div>
+  ${(ins.errors || []).length ? `<div class="lf-warnings">${ins.errors.map(e => `<div>${esc(e)}</div>`).join('')}</div>` : ''}
+  <div class="lf-actions"><button type="button" class="tb-btn" id="zv-recheck">⟳ Cek ulang</button><button type="button" class="tb-btn" id="zv-close2">Tutup</button></div>`;
+  b.innerHTML = html;
+  document.getElementById('zv-recheck').addEventListener('click', () => zvCheck(true));
+  document.getElementById('zv-close2').addEventListener('click', zvClose);
+}
+
+async function zvCheck(refresh) {
+  const btn = document.getElementById('zv-btn');
+  document.getElementById('zv-modal').classList.add('show');
+  document.getElementById('zv-body').innerHTML = '<div class="lf-status"><span class="dspinner"></span> Mengecek versi terpasang dan rilis terbaru…</div>';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/zimbra-version' + (refresh ? '?refresh=1' : ''), { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    zvRender(d.version, d.fresh); zvSide(d.version);
+  } catch (e) {
+    document.getElementById('zv-body').innerHTML = `<div class="lf-status err">✕ Gagal: ${esc(e.message)}</div>`;
+  } finally { btn.disabled = false; }
+}
+
+function zvClose() { document.getElementById('zv-modal').classList.remove('show'); }
+
+function initZimbraVersion() {
+  const modal = document.getElementById('zv-modal');
+  if (!modal) return;
+  document.getElementById('zv-btn').addEventListener('click', () => zvCheck(true));
+  document.getElementById('zv-modal-close').addEventListener('click', zvClose);
+  modal.addEventListener('click', e => { if (e.target === modal) zvClose(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal.classList.contains('show')) zvClose(); });
+  fetch('/api/zimbra-version?cached=1', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(d => d && zvSide(d.version)).catch(() => {});
+}
+
 // ── Views: Mail Tracker / Statistics / Alerts ──────────────
 const VIEWS = ['tracker', 'stats', 'alerts'];
 let _statsDays = 30;
@@ -1304,6 +1386,7 @@ function initViews() {
   document.getElementById('alerts-refresh-btn').addEventListener('click', () => { loadAlerts(); loadFirewall(); });
   initFirewall();
   initAdvice();
+  initZimbraVersion();
   window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'tracker'));
   let rt;
   window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => {

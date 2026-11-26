@@ -83,8 +83,8 @@ def _log_injection(ctx):
            "grep -c zm_unsafe_args /opt/zimbra/conf/swatchrc.in"),
         _s("Pastikan notifikasi SNMP tetap mati (harus 'no').",
            "su - zimbra -c 'zmlocalconfig snmp_notify'"),
-        _s("Rencanakan upgrade ke Zimbra 10.1.21 atau lebih baru (perbaikan CVE-2026-73570), "
-           "lalu pasang ulang hardening swatchrc.in. Perlu jadwal maintenance."),
+        _s("CVE-2026-73570 sudah diperbaiki sejak Zimbra 10.1.20. Tetap ikuti patch terbaru (cek dengan tombol CEK VERSI di sidebar); "
+           "setelah upgrade, pasang ulang hardening swatchrc.in karena installer menimpanya. Upgrade perlu jadwal maintenance."),
     ]
     if ips:
         steps.append(_s("Blokir IP penyerang 24 jam terakhir di firewall (permanen, bisa dibuka lagi dengan 'ufw delete deny from <IP>').",

@@ -92,6 +92,16 @@
       </div>
     </div>
 
+    <div class="sidebar-section">
+      <div class="sidebar-label">zimbra</div>
+      <div class="zv-side" id="zv-side">
+        <div class="stat-mini-label">VERSI TERPASANG</div>
+        <div class="zv-side-ver" id="zv-side-ver">—</div>
+        <div class="zv-side-state" id="zv-side-state"></div>
+      </div>
+      <button class="tb-btn zv-btn" id="zv-btn" type="button">⟳ CEK VERSI ZIMBRA</button>
+    </div>
+
     <div class="sidebar-status">
       <span class="status-dot"></span>SYSTEM ACTIVE<br/>
       <span style="font-size:9px;display:block;margin-top:4px;letter-spacing:1px">
@@ -488,6 +498,17 @@
         <button type="submit" class="tb-btn lf-apply" id="fw-apply">Terapkan</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- ══ MODAL: VERSI ZIMBRA ═══════════════════════════════ -->
+<div class="modal-overlay" id="zv-modal" role="dialog" aria-modal="true" aria-labelledby="zv-modal-title">
+  <div class="modal-box limits-modal-box">
+    <div class="modal-header">
+      <span id="zv-modal-title">◈ VERSI ZIMBRA</span>
+      <button class="modal-close" id="zv-modal-close" type="button" aria-label="Tutup">✕</button>
+    </div>
+    <div class="limits-form zv-body" id="zv-body"></div>
   </div>
 </div>
 

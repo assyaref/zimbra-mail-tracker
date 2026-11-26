@@ -261,5 +261,18 @@ check("advice: every alert code has steps", all(AA.advice_for(c, {})["steps"] fo
 check("advice: alerts carry advice", all(a.get("advice") for a in db.compute_alerts({"sasl_fail_ip_24h": 1})["alerts"]))
 check("advice: category tips", AA.category_tip("Mailbox penuh").startswith("Kotak") and AA.category_tip("Error transport lokal (cek akun/transport)").startswith("Konfigurasi")
       and AA.category_tip("xyz").startswith("Baca"))
+# 14) Zimbra version check (no network / zmcontrol)
+import zimbra_version as ZV
+zi = ZV.parse_zmcontrol("Release 10.1.20.GA.1048.UBUNTU24.64 UBUNTU24_64 FOSS edition.\n")
+check("version: zmcontrol parsed", zi and zi["version"] == "10.1.20" and zi["edition"] == "FOSS" and zi["build"] == "1048")
+check("version: garbage not parsed", ZV.parse_zmcontrol("zmcontrol: command not found") is None)
+rel = ["10.0.18", "10.1.16", "10.1.20", "10.1.21"]
+c1 = ZV.compare("10.1.20", rel)
+check("version: one patch behind", c1["status"] == "outdated" and c1["behind"] == 1 and c1["latest_in_line"] == "10.1.21"
+      and c1["release_notes"][0]["url"].endswith("/10.1.21") and c1["newer_major"] is None)
+check("version: current", ZV.compare("10.1.21", rel)["status"] == "current")
+check("version: newer major line reported", ZV.compare("10.0.18", rel)["newer_major"] == "10.1.21"
+      and ZV.compare("10.0.18", rel)["status"] == "current")
+check("version: numeric (not string) ordering", ZV.vtuple("10.1.9") < ZV.vtuple("10.1.10"))
 print(f"\nRESULT: {ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

@@ -1425,3 +1425,26 @@ code.payload { color: #ff8a8a; font-size: 10px; word-break: break-all; }
 .row-tip { font-size: 9px; color: var(--green-dim); margin-top: 3px; line-height: 1.4; }
 .fw-panel.flash { box-shadow: 0 0 0 2px var(--green); transition: box-shadow 0.3s; }
 @media (max-width: 640px) { .adv-foot .dmuted { margin-left: 0; } }
+
+/* ── Versi Zimbra ── */
+.zv-side { padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: #020d05; margin-bottom: 8px; }
+.zv-side-ver { font-family: var(--font-title); font-size: 15px; color: var(--white); margin-top: 3px; }
+.zv-side-state { font-size: 9px; letter-spacing: 1px; margin-top: 3px; }
+.zv-ok { color: var(--green); }
+.zv-warn { color: var(--amber); }
+.zv-unk { color: var(--muted); }
+.zv-btn { width: 100%; font-size: 10px; white-space: normal; padding: 7px 8px; }
+.zv-btn:disabled { opacity: 0.5; cursor: wait; }
+.zv-hero { display: grid; grid-template-columns: 1fr auto 1fr; gap: 14px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-panel); font-size: 10px; }
+.zv-hero.zv-warn { border-color: rgba(255,176,0,0.5); }
+.zv-hero.zv-ok { border-color: rgba(0,255,65,0.4); }
+.zv-big { font-family: var(--font-title); font-size: 22px; color: var(--white); margin: 4px 0; }
+.zv-arrow { font-size: 18px; color: var(--muted); }
+.zv-k { font-size: 9px; letter-spacing: 1.5px; color: var(--green-dim); text-transform: uppercase; }
+.zv-rows { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 4px; }
+.zv-row { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 10px; padding: 7px 10px; font-size: 10px; border-bottom: 1px solid rgba(13,51,24,0.7); }
+.zv-row:last-child { border-bottom: 0; }
+.zv-v { color: var(--white); overflow-wrap: anywhere; }
+.zv-link { color: var(--amber); }
+.zv-body .lf-actions { margin-top: 2px; }
+@media (max-width: 560px) { .zv-hero { grid-template-columns: 1fr; } .zv-arrow { display: none; } .zv-row { grid-template-columns: 1fr; gap: 2px; } }

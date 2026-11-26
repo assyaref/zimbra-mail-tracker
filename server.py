@@ -26,6 +26,7 @@ import db
 import store_meta
 import mail_limits
 import firewall
+import zimbra_version
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _TLS_ENABLED = False
@@ -331,6 +332,32 @@ def _background_limits():
             print(f"[ERR] limits refresh: {e}")
         time.sleep(LIMITS_TTL)
 
+# ── Versi Zimbra (cache 6 jam; cek manual maks 1x per menit) ──────────────────
+_zv_cache = {"data": None, "ts": 0.0}
+_zv_lock = threading.Lock()
+ZV_TTL = 6 * 3600
+
+
+def _zimbra_version(force=False):
+    with _zv_lock:
+        age = time.time() - _zv_cache["ts"]
+        if _zv_cache["data"] and (age < 60 or (not force and age < ZV_TTL)):
+            return _zv_cache["data"], False
+        data = zimbra_version.check(online=bool(_runtime_cfg.get("version_check_online", True)))
+        _zv_cache.update(data=data, ts=time.time())
+        return data, True
+
+
+def _background_zimbra_version():
+    time.sleep(15)
+    while True:
+        try:
+            _zimbra_version(force=False)
+        except Exception as e:
+            print(f"[ERR] zimbra version check: {e}")
+        time.sleep(ZV_TTL)
+
+
 # ── UFW / Fail2ban ──────────────────────────────────────────────────────────
 _fw_lock = threading.Lock()
 
@@ -379,6 +406,7 @@ if os.getenv("ZMT_NO_SYNC", "") != "1":
         threading.Thread(target=_background_store_scan, daemon=True).start()
     threading.Thread(target=_background_limits, daemon=True).start()
     threading.Thread(target=_background_fw_watchdog, daemon=True).start()
+    threading.Thread(target=_background_zimbra_version, daemon=True).start()
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
@@ -589,6 +617,14 @@ class TrackerHandler(BaseHTTPRequestHandler):
             return
 
         # Batas ukuran pesan & lampiran (read-only)
+        if path == "/api/zimbra-version":
+            if qget("cached") == "1":
+                self._send_json({"version": _zv_cache["data"], "fresh": False})
+                return
+            data, fresh = _zimbra_version(force=qget("refresh") == "1")
+            self._send_json({"version": data, "fresh": fresh})
+            return
+
         if path == "/api/firewall":
             st = firewall.status(_fw_revert_at())
             self._send_json({"status": st, "editable": _limits_editable(),
