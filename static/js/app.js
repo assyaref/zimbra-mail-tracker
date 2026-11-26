@@ -696,9 +696,12 @@ async function loadLimits(force) {
   }
   const L = d.limits || {}, U = d.usage || {};
   _zmtLimits = L;
+  const editBtn = document.getElementById('limits-edit-btn');
+  if (editBtn) editBtn.hidden = !d.editable;
+  renderLimitsAudit(d.audit || []);
   const errs = (L.errors || []).length;
   summary.innerHTML = `Sumber: Postfix <code>message_size_limit</code> &amp; <code>zmprov</code> · diperbarui ${esc(L.fetched_at || '—')}` +
-    ` · <span class="limits-ro">READ-ONLY</span>` + (errs ? ` · <span style="color:var(--red)">${errs} error: ${esc(L.errors.join('; '))}</span>` : '') +
+    ` · <span class="limits-ro">${d.editable ? 'DAPAT DIUBAH · AUDIT' : 'READ-ONLY'}</span>` + (errs ? ` · <span style="color:var(--red)">${errs} error: ${esc(L.errors.join('; '))}</span>` : '') +
     (L.consistent === false ? ` · <span style="color:var(--amber)">zimbraMtaMaxMessageSize ≠ Postfix (belum diterapkan?)</span>` : '');
 
   const card = (title, value, sub, tone = '') => `
@@ -739,8 +742,134 @@ async function loadLimits(force) {
           <div><b class="${U.size_rejections ? 'red' : ''}">${U.size_rejections ?? 0}</b><span>ditolak karena ukuran</span></div>
         </div>
       </div>
-      <div class="limits-footnote">Ubah batas lewat Admin Console atau <code>zmprov mcf zimbraMtaMaxMessageSize …</code> / <code>zimbraFileUploadMaxSize …</code> (perlu restart MTA/mailbox). Panel ini hanya menampilkan.</div>`;
+      <div class="limits-footnote">${d.editable ? 'Gunakan <b>✎ UBAH BATAS</b> untuk mengubah nilai (wajib password, tercatat di riwayat). Postfix diperbarui otomatis oleh zmconfigd ±1 menit.' : 'Perubahan dari dashboard nonaktif. Ubah lewat Admin Console atau <code>zmprov mcf …</code>.'}</div>`;
   }
+}
+
+function renderLimitsAudit(rows) {
+  const box = document.getElementById('limits-audit');
+  if (!box) return;
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const name = (a) => ({ zimbraMtaMaxMessageSize: 'Pesan (MTA)', zimbraMailContentMaxSize: 'Konten tersimpan',
+    zimbraFileUploadMaxSize: 'Upload webmail', zimbraFileUploadMaxSizePerFile: 'Per file (COS)' }[a] || a);
+  box.innerHTML = `<div class="limits-usage-title">RIWAYAT PERUBAHAN</div>
+    <div class="audit-list">${rows.map(r => `
+      <div class="audit-row ${r.ok ? '' : 'audit-fail'}">
+        <span class="audit-ts">${esc(r.ts)}</span>
+        <span class="audit-who">${esc(r.username || '?')} · ${esc(r.ip || '')}</span>
+        <span class="audit-what">${(r.changes || []).map(c => `${esc(name(c.attr))}: ${fmtBytes(c.old)} → <b>${fmtBytes(c.new)}</b>`).join(' · ') || '—'}</span>
+        <span class="audit-res">${r.ok ? 'OK' : 'GAGAL'}</span>
+      </div>`).join('')}</div>`;
+}
+
+// ── Form ubah batas ────────────────────────────────────────
+const lf = {
+  el: (id) => document.getElementById(id),
+  previewOk: false,
+  values() {
+    const n = (id) => { const v = lf.el(id).value.trim(); return v === '' ? null : Number(v); };
+    return { message_mb: n('lf-message'), upload_mb: n('lf-upload'), per_file_mb: n('lf-perfile') };
+  },
+  status(msg, tone = '') { const s = lf.el('lf-status'); s.className = 'lf-status ' + tone; s.innerHTML = msg; },
+  invalidate() {
+    lf.previewOk = false; lf.el('lf-apply').disabled = true; lf.el('lf-preview').hidden = true;
+    const v = lf.values();
+    const eff = v.message_mb ? Math.max(0, v.message_mb * 1048576 - 16384) / ((4 / 3) * (78 / 76)) : 0;
+    lf.el('lf-derived').innerHTML = v.message_mb ? `→ lampiran efektif ≈ <b>${fmtBytes(Math.floor(eff))}</b> (setelah base64)` : '';
+    const w = [];
+    if (v.upload_mb && eff && v.upload_mb * 1048576 > eff) w.push(`Upload webmail ${v.upload_mb} MB melebihi lampiran efektif ≈${fmtBytes(Math.floor(eff))}; lampiran sebesar itu akan ditolak MTA.`);
+    if (v.per_file_mb && v.upload_mb && v.per_file_mb > v.upload_mb) w.push('Maks per file tidak boleh melebihi maks upload.');
+    const wb = lf.el('lf-warnings'); wb.hidden = !w.length; wb.innerHTML = w.map(x => `<div>⚠ ${esc(x)}</div>`).join('');
+    lf.status('');
+  },
+  open() {
+    const L = _zmtLimits || {};
+    const mb = (b) => b === null || b === undefined ? '' : Math.round(b / 1048576);
+    lf.el('lf-message').value = mb(L.zimbra_mta_max_message_size);
+    lf.el('lf-upload').value = mb(L.file_upload_max_size);
+    lf.el('lf-perfile').value = mb(L.file_upload_max_size_per_file || 0);
+    lf.el('lf-message-cur').textContent = 'sekarang ' + fmtBytes(L.zimbra_mta_max_message_size);
+    lf.el('lf-upload-cur').textContent = 'sekarang ' + fmtBytes(L.file_upload_max_size);
+    lf.el('lf-perfile-cur').textContent = 'sekarang ' + (L.file_upload_max_size_per_file ? fmtBytes(L.file_upload_max_size_per_file) : '0 (tidak dibatasi)');
+    lf.el('lf-password').value = '';
+    lf.invalidate();
+    lf.el('limits-modal').classList.add('show');
+    setTimeout(() => lf.el('lf-message').focus(), 50);
+  },
+  close() { lf.el('limits-modal').classList.remove('show'); lf.el('lf-password').value = ''; },
+  async send(dryRun) {
+    const pwd = lf.el('lf-password').value;
+    if (!pwd) { lf.status('Masukkan password dashboard untuk konfirmasi.', 'err'); lf.el('lf-password').focus(); return null; }
+    const btns = ['lf-preview-btn', 'lf-apply', 'lf-cancel'].map(lf.el);
+    btns.forEach(b => b.disabled = true);
+    lf.status(dryRun ? 'Memeriksa…' : '<span class="dspinner"></span> Menerapkan ke Zimbra…');
+    try {
+      const res = await fetch('/api/limits', {
+        method: 'POST', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-ZMT-Request': 'limits' },
+        body: JSON.stringify({ ...lf.values(), password: pwd, dry_run: dryRun }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok && !d.changes) throw new Error(d.error || `HTTP ${res.status}`);
+      return d;
+    } catch (e) {
+      lf.status('✕ ' + esc(e.message), 'err');
+      return null;
+    } finally {
+      lf.el('lf-preview-btn').disabled = false; lf.el('lf-cancel').disabled = false;
+      lf.el('lf-apply').disabled = !lf.previewOk;
+    }
+  },
+  renderChanges(d) {
+    const box = lf.el('lf-preview');
+    const ch = d.changes || [];
+    box.hidden = false;
+    box.innerHTML = ch.length
+      ? `<div class="lf-preview-title">Akan diubah:</div>` + ch.map(c =>
+          `<div class="lf-change"><code>${esc(c.attr)}</code> <span class="dmuted">(${esc(c.scope)})</span><span>${fmtBytes(c.old)} → <b>${fmtBytes(c.new)}</b></span></div>`).join('')
+      : `<div class="dmuted">Tidak ada perubahan: nilai sama dengan konfigurasi sekarang.</div>`;
+    if ((d.warnings || []).length) {
+      const wb = lf.el('lf-warnings'); wb.hidden = false;
+      wb.innerHTML = d.warnings.map(x => `<div>⚠ ${esc(x)}</div>`).join('');
+    }
+    return ch.length;
+  },
+};
+
+function initLimitsForm() {
+  const modal = lf.el('limits-modal');
+  if (!modal) return;
+  lf.el('limits-edit-btn').addEventListener('click', lf.open);
+  lf.el('limits-modal-close').addEventListener('click', lf.close);
+  lf.el('lf-cancel').addEventListener('click', lf.close);
+  modal.addEventListener('click', e => { if (e.target === modal) lf.close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal.classList.contains('show')) lf.close(); });
+  ['lf-message', 'lf-upload', 'lf-perfile'].forEach(id => lf.el(id).addEventListener('input', lf.invalidate));
+  lf.el('lf-preview-btn').addEventListener('click', async () => {
+    const d = await lf.send(true);
+    if (!d) return;
+    const n = lf.renderChanges(d);
+    lf.previewOk = n > 0;
+    lf.el('lf-apply').disabled = !lf.previewOk;
+    lf.status(n ? 'Periksa perubahan di atas, lalu klik <b>Terapkan</b>.' : 'Tidak ada yang perlu diterapkan.', n ? 'ok' : '');
+  });
+  lf.el('limits-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!lf.previewOk) { lf.status('Klik Pratinjau terlebih dahulu.', 'err'); return; }
+    const d = await lf.send(false);
+    if (!d) return;
+    lf.previewOk = false; lf.el('lf-apply').disabled = true;
+    if (d.ok) {
+      lf.el('lf-password').value = '';
+      lf.status('✓ Diterapkan. ' + esc((d.log || []).slice(-1)[0] || ''), 'ok');
+      showToast('Batas ukuran diperbarui');
+      loadLimits(false);
+      setTimeout(lf.close, 2500);
+    } else {
+      lf.status('✕ Gagal menerapkan: ' + esc((d.log || []).join(' | ') || d.error || ''), 'err');
+      loadLimits(false);
+    }
+  });
 }
 
 // ── Init ───────────────────────────────────────────────────
@@ -754,6 +883,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const limitsRefresh = document.getElementById('limits-refresh-btn');
   if (limitsRefresh) limitsRefresh.addEventListener('click', () => loadLimits(true));
   loadLimits(false);
+  initLimitsForm();
 
   // Search
   let searchTimer;

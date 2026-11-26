@@ -108,6 +108,14 @@ def init_db():
         );
         """)
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS limits_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT DEFAULT (datetime('now','localtime')),
+            username TEXT, ip TEXT, ok INTEGER,
+            changes TEXT, warnings TEXT, log TEXT
+        );
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS kv (
             k TEXT PRIMARY KEY,
             v TEXT
@@ -614,4 +622,29 @@ def limits_usage(message_limit=None, days=30):
             reason LIKE '%5.3.4%' OR reason LIKE '%exceeds size limit%' OR reason LIKE '%message size%'
             OR reason LIKE '%too large%' OR reason LIKE '%file too big%')""", (since,)).fetchone()[0]
     conn.close()
+    return out
+
+
+def add_limits_audit(username, ip, ok, changes, warnings, log_lines):
+    conn = get_db()
+    with conn:
+        conn.execute("INSERT INTO limits_audit (username, ip, ok, changes, warnings, log) VALUES (?, ?, ?, ?, ?, ?)",
+                     (username, ip, 1 if ok else 0, json.dumps(changes, ensure_ascii=False),
+                      json.dumps(warnings, ensure_ascii=False), json.dumps(log_lines, ensure_ascii=False)))
+    conn.close()
+
+
+def list_limits_audit(limit=10):
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM limits_audit ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("changes", "warnings", "log"):
+            try:
+                d[k] = json.loads(d[k] or "[]")
+            except ValueError:
+                d[k] = []
+        out.append(d)
     return out

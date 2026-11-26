@@ -1258,3 +1258,52 @@ table.mini-table td .badge { font-size: 9px; padding: 2px 6px; }
 .dlimit { margin: 0 0 10px; }
 .dlimit .dlabel { display: block; }
 .dlimit-inline { width: 100%; margin-top: 6px; }
+
+/* ── Ubah batas: tombol, form, riwayat ───────────────────── */
+.limits-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.limits-edit-btn { border-color: rgba(255,176,0,0.55) !important; color: var(--amber) !important; }
+.limits-edit-btn:hover { background: rgba(255,176,0,0.1) !important; }
+.limits-modal-box { max-width: 560px; }
+.limits-form { padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 14px; }
+.lf-intro { font-size: 10px; line-height: 1.5; color: var(--muted); padding: 8px 10px; border: 1px dashed var(--border); border-radius: 4px; }
+.lf-field { display: flex; flex-direction: column; gap: 5px; }
+.lf-label { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--green-dim); }
+.lf-input { display: flex; align-items: stretch; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-panel); overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s; }
+.lf-input:focus-within { border-color: var(--green); box-shadow: 0 0 0 2px rgba(0,255,65,0.12); }
+.lf-input input {
+  flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
+  color: var(--green); font-family: var(--font-title); font-size: 16px; padding: 8px 10px;
+}
+.lf-input input[type=password] { font-family: var(--font-mono); font-size: 13px; letter-spacing: 2px; }
+.lf-unit { display: flex; align-items: center; padding: 0 12px; font-size: 10px; letter-spacing: 1px; color: var(--muted); border-left: 1px solid var(--border); background: rgba(0,61,16,0.25); }
+.lf-help { font-size: 9px; color: var(--muted); line-height: 1.5; }
+.lf-help code { color: var(--green-dim); font-size: 9px; }
+.lf-derived { font-size: 10px; color: var(--white); }
+.lf-derived b { color: var(--green); font-weight: normal; }
+.lf-warnings { font-size: 10px; color: var(--amber); background: rgba(255,176,0,0.06); border: 1px solid rgba(255,176,0,0.35); border-radius: 4px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.lf-preview { font-size: 10px; background: rgba(0,255,65,0.04); border: 1px solid var(--border-bright); border-radius: 4px; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
+.lf-preview-title { color: var(--green-dim); letter-spacing: 1px; text-transform: uppercase; font-size: 9px; }
+.lf-change { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--white); }
+.lf-change code { color: var(--green-dim); }
+.lf-change b { color: var(--green); font-weight: normal; }
+.lf-status { font-size: 10px; min-height: 14px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.lf-status.ok { color: var(--green); }
+.lf-status.err { color: var(--red); }
+.lf-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid var(--border); }
+.lf-apply { border-color: rgba(255,176,0,0.6) !important; color: var(--amber) !important; }
+.lf-apply:disabled, .lf-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.limits-audit { margin-top: 12px; }
+.audit-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+.audit-row { display: grid; grid-template-columns: 140px 170px minmax(0, 1fr) 54px; gap: 10px; align-items: center; padding: 6px 10px; font-size: 10px; background: #041508; border-bottom: 1px solid rgba(13,51,24,0.7); }
+.audit-row:last-child { border-bottom: 0; }
+.audit-ts, .audit-who { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.audit-what { color: var(--white); overflow-wrap: anywhere; }
+.audit-what b { color: var(--green); font-weight: normal; }
+.audit-res { text-align: right; color: var(--green); letter-spacing: 1px; }
+.audit-fail .audit-res { color: var(--red); }
+@media (max-width: 800px) {
+  .audit-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .audit-who { display: none; }
+  .audit-what { grid-column: 1 / -1; }
+}

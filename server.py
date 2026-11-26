@@ -307,6 +307,13 @@ def _refresh_limits(force=False):
         _limits_cache.update(data=data, ts=time.time())
         return data
 
+_limits_apply_lock = threading.Lock()
+
+def _limits_editable():
+    """Edit diizinkan hanya bila dashboard memakai login (password) dan tidak dimatikan di config."""
+    return bool(_runtime_cfg.get("username") and _runtime_cfg.get("password_hash")
+                and _runtime_cfg.get("allow_limit_changes", True))
+
 def _background_limits():
     time.sleep(5)
     while True:
@@ -521,7 +528,8 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 usage = db.limits_usage(data.get("effective_message_limit"))
             except Exception as e:
                 usage = {"error": str(e)}
-            self._send_json({"limits": data, "usage": usage})
+            self._send_json({"limits": data, "usage": usage,
+                             "editable": _limits_editable(), "audit": db.list_limits_audit(8)})
             return
 
         # Message detail: header To/Cc, lampiran, semua penerima envelope
@@ -674,6 +682,66 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
         if not self._check_auth():
             self._send_json({"error": "Unauthorized"}, 401)
+            return
+
+        # Ubah batas ukuran pesan & lampiran (password wajib, audit)
+        if path == "/api/limits":
+            ip = self.client_address[0]
+            if not _limits_editable():
+                self._send_json({"error": "Perubahan batas dinonaktifkan (login dashboard tidak aktif atau allow_limit_changes=false)"}, 403)
+                return
+            # CSRF: wajib header kustom (tidak bisa dikirim lintas-situs tanpa CORS) dan Origin harus sama
+            origin = self.headers.get("Origin", "")
+            host = self.headers.get("Host", "")
+            if self.headers.get("X-ZMT-Request", "") != "limits" or (origin and urlparse(origin).netloc != host):
+                self._send_json({"error": "Permintaan ditolak (CSRF check)"}, 403)
+                return
+            try:
+                data = json.loads(body.decode("utf-8")) if body else {}
+                if not isinstance(data, dict):
+                    raise ValueError
+            except ValueError:
+                self._send_json({"error": "JSON tidak valid"}, 400)
+                return
+            if _login_blocked(ip):
+                self._send_json({"error": "Terlalu banyak percobaan password, coba lagi nanti"}, 429)
+                return
+            pwd = data.get("password", "")
+            if not isinstance(pwd, str) or not _verify_password(pwd, _runtime_cfg.get("password_hash", "")):
+                _login_failed(ip)
+                print(f"[WARN] limits change: wrong password from {ip}")
+                self._send_json({"error": "Password salah"}, 401)
+                return
+            dry_run = bool(data.get("dry_run"))
+            if not _limits_apply_lock.acquire(blocking=False):
+                self._send_json({"error": "Perubahan lain sedang diproses"}, 409)
+                return
+            try:
+                current = _refresh_limits(force=False) or {}
+                if current.get("errors") and current.get("zimbra_mta_max_message_size") is None:
+                    self._send_json({"error": "Nilai saat ini tidak terbaca dari Zimbra: " + "; ".join(current["errors"])}, 503)
+                    return
+                req = {k: data.get(k) for k in mail_limits.BOUNDS}
+                try:
+                    target, warnings = mail_limits.validate(req, current)
+                except mail_limits.LimitError as e:
+                    self._send_json({"error": str(e)}, 400)
+                    return
+                cmds, changes = mail_limits.build_commands(target, current)
+                if dry_run or not cmds:
+                    self._send_json({"dry_run": dry_run, "changes": changes, "warnings": warnings,
+                                     "message": "Tidak ada perubahan" if not cmds else "Pratinjau"})
+                    return
+                user = _runtime_cfg.get("username", "")
+                print(f"[INFO] limits change by {user}@{ip}: {changes}")
+                ok, log_lines = mail_limits.apply_commands(cmds)
+                db.add_limits_audit(user, ip, ok, changes, warnings, log_lines)
+                _limits_cache["ts"] = 0
+                fresh = _refresh_limits(force=False)
+                self._send_json({"ok": ok, "changes": changes, "warnings": warnings, "log": log_lines,
+                                 "limits": fresh}, 200 if ok else 500)
+            finally:
+                _limits_apply_lock.release()
             return
 
         # Upload manual log

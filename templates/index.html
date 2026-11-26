@@ -178,17 +178,21 @@
       </div>
     </section>
 
-    <!-- BATAS UKURAN PESAN & LAMPIRAN (read-only) -->
+    <!-- BATAS UKURAN PESAN & LAMPIRAN -->
     <section id="limits-panel" class="limits-panel">
       <div class="limits-head">
         <div>
           <div class="limits-title">◈ BATAS UKURAN PESAN &amp; LAMPIRAN</div>
           <div id="limits-summary" class="limits-sub">Memuat konfigurasi Zimbra…</div>
         </div>
-        <button class="tb-btn" id="limits-refresh-btn" type="button">↻ REFRESH</button>
+        <div class="limits-actions">
+          <button class="tb-btn limits-edit-btn" id="limits-edit-btn" type="button" hidden>✎ UBAH BATAS</button>
+          <button class="tb-btn" id="limits-refresh-btn" type="button">↻ REFRESH</button>
+        </div>
       </div>
       <div id="limits-cards" class="limits-cards"></div>
       <div id="limits-usage" class="limits-usage"></div>
+      <div id="limits-audit" class="limits-audit"></div>
     </section>
 
     <!-- STAT CARDS -->
@@ -340,6 +344,54 @@
       <button class="modal-close" id="modal-close">✕</button>
     </div>
     <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<!-- ══ MODAL: UBAH BATAS UKURAN ═══════════════════════════ -->
+<div class="modal-overlay" id="limits-modal" role="dialog" aria-modal="true" aria-labelledby="limits-modal-title">
+  <div class="modal-box limits-modal-box">
+    <div class="modal-header">
+      <span id="limits-modal-title">✎ UBAH BATAS UKURAN PESAN &amp; LAMPIRAN</span>
+      <button class="modal-close" id="limits-modal-close" type="button" aria-label="Tutup">✕</button>
+    </div>
+    <form id="limits-form" class="limits-form" autocomplete="off" novalidate>
+      <div class="lf-intro">Perubahan ditulis ke konfigurasi Zimbra (LDAP) dan berlaku untuk seluruh server. Postfix diperbarui otomatis oleh zmconfigd dalam ±1 menit (reload, koneksi SMTP tidak terputus). Tidak ada restart mailbox.</div>
+
+      <label class="lf-field">
+        <span class="lf-label">Maks ukuran pesan (MTA)</span>
+        <span class="lf-input"><input type="number" id="lf-message" min="1" max="100" step="1" inputmode="numeric" required><span class="lf-unit">MB</span></span>
+        <span class="lf-help"><code>zimbraMtaMaxMessageSize</code> · total email termasuk lampiran · 1–100 MB · <span id="lf-message-cur"></span></span>
+        <span class="lf-derived" id="lf-derived"></span>
+      </label>
+
+      <label class="lf-field">
+        <span class="lf-label">Maks upload web client</span>
+        <span class="lf-input"><input type="number" id="lf-upload" min="1" max="100" step="1" inputmode="numeric" required><span class="lf-unit">MB</span></span>
+        <span class="lf-help"><code>zimbraFileUploadMaxSize</code> · batas lampiran saat kirim via webmail · <span id="lf-upload-cur"></span></span>
+      </label>
+
+      <label class="lf-field">
+        <span class="lf-label">Maks per file (COS default)</span>
+        <span class="lf-input"><input type="number" id="lf-perfile" min="0" max="100" step="1" inputmode="numeric" required><span class="lf-unit">MB</span></span>
+        <span class="lf-help"><code>zimbraFileUploadMaxSizePerFile</code> · 0 = tidak dibatasi terpisah · tidak boleh melebihi upload · <span id="lf-perfile-cur"></span></span>
+      </label>
+
+      <div id="lf-warnings" class="lf-warnings" hidden></div>
+      <div id="lf-preview" class="lf-preview" hidden></div>
+
+      <label class="lf-field">
+        <span class="lf-label">Konfirmasi password dashboard</span>
+        <span class="lf-input"><input type="password" id="lf-password" autocomplete="current-password" required></span>
+      </label>
+
+      <div id="lf-status" class="lf-status" role="status" aria-live="polite"></div>
+
+      <div class="lf-actions">
+        <button type="button" class="tb-btn" id="lf-cancel">Batal</button>
+        <button type="button" class="tb-btn" id="lf-preview-btn">Pratinjau</button>
+        <button type="submit" class="tb-btn lf-apply" id="lf-apply" disabled>Terapkan</button>
+      </div>
+    </form>
   </div>
 </div>
 

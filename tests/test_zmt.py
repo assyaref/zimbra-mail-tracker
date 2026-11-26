@@ -156,5 +156,27 @@ c.execute("update emails set size=24000000 where queue_id='QD1' and recipient='b
 u = db.limits_usage(26214400)
 check("limits: usage largest attachment found", u["largest_attachments"] and u["largest_attachments"]["att_total"] == len(payload))
 check("limits: near-limit message counted", u["near_limit_messages"] == 1)
+
+# 10) limit changes: validation + command building (no zmprov executed)
+cur = {"zimbra_mta_max_message_size": 25*1048576, "mail_content_max_size": 25*1048576,
+       "file_upload_max_size": 10*1048576, "file_upload_max_size_per_file": 0}
+def rej(req):
+    try: mail_limits.validate(req, cur); return False
+    except mail_limits.LimitError: return True
+check("limits-edit: reject 0 / >100 / decimal / text / empty / bool", all(rej(r) for r in
+      [{"message_mb": 0}, {"message_mb": 101}, {"upload_mb": 2.5}, {"upload_mb": "x; rm -rf /"}, {}, {"message_mb": True}]))
+check("limits-edit: reject per-file > upload", rej({"per_file_mb": 20, "upload_mb": 10}))
+t, w = mail_limits.validate({"message_mb": 30, "upload_mb": 20}, cur); cmds, ch = mail_limits.build_commands(t, cur)
+check("limits-edit: raise message also raises content limit", cmds == ["mcf zimbraMtaMaxMessageSize 31457280", "mcf zimbraMailContentMaxSize 31457280", "mcf zimbraFileUploadMaxSize 20971520"])
+t, w = mail_limits.validate({"message_mb": 20}, cur); cmds, _ = mail_limits.build_commands(t, cur)
+check("limits-edit: lowering message keeps content limit", cmds == ["mcf zimbraMtaMaxMessageSize 20971520"])
+t, w = mail_limits.validate({"message_mb": 25, "upload_mb": 10, "per_file_mb": 0}, cur)
+check("limits-edit: identical values -> no commands", mail_limits.build_commands(t, cur)[0] == [])
+t, w = mail_limits.validate({"upload_mb": 25}, cur)
+check("limits-edit: warning when upload exceeds effective attachment", any("melebihi" in x for x in w))
+t, w = mail_limits.validate({"per_file_mb": 5}, cur); cmds, _ = mail_limits.build_commands(t, cur)
+check("limits-edit: per-file goes to COS default", cmds == ["mc default zimbraFileUploadMaxSizePerFile 5242880"])
+db.add_limits_audit("tester", "127.0.0.1", True, [{"attr": "x", "old": 1, "new": 2}], [], ["ok"])
+check("limits-edit: audit stored and listed", db.list_limits_audit(5)[0]["changes"][0]["new"] == 2)
 print(f"\nRESULT: {ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)
