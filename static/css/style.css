@@ -94,6 +94,84 @@ body::after {
   min-height: 70px;
 }
 
+.header-inner { position: relative; }
+
+/* ── Centered brand: ASSYAREF.DEF ── */
+.header-brand {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 22px 7px;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.header-brand::before,
+.header-brand::after {
+  content: "";
+  position: absolute;
+  width: 12px; height: 12px;
+  border: 1px solid var(--green);
+  opacity: 0.7;
+}
+.header-brand::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+.header-brand::after  { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+.brand-caption {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 4px;
+  color: var(--muted);
+}
+.brand-name {
+  position: relative;
+  font-family: var(--font-title);
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 6px;
+  color: var(--green);
+  text-shadow: 0 0 12px var(--green), 0 0 28px rgba(0,255,65,0.35);
+  animation: brand-flicker 6s infinite;
+}
+.brand-name::after {
+  content: "";
+  position: absolute;
+  left: -10%; right: -10%;
+  height: 2px;
+  top: 0;
+  background: linear-gradient(90deg, transparent, rgba(0,255,65,0.9), transparent);
+  opacity: 0.6;
+  animation: brand-scan 3.2s linear infinite;
+}
+.brand-dot { color: var(--amber); text-shadow: 0 0 10px var(--amber); }
+@keyframes brand-scan {
+  0%   { top: 0;    opacity: 0; }
+  10%  { opacity: 0.7; }
+  90%  { opacity: 0.7; }
+  100% { top: 100%; opacity: 0; }
+}
+@keyframes brand-flicker {
+  0%, 92%, 100% { opacity: 1; }
+  93% { opacity: 0.55; }
+  94% { opacity: 1; }
+  96% { opacity: 0.75; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-name, .brand-name::after { animation: none; }
+}
+/* Header kiri ~360px dan kanan ~580px: badge disembunyikan bila ruang tengah tidak cukup. */
+@media (max-width: 1700px) {
+  .brand-name { font-size: 16px; letter-spacing: 4px; }
+}
+@media (max-width: 1500px) {
+  .header-brand { display: none; }
+}
+
 .header-logo {
   display: flex;
   align-items: center;
