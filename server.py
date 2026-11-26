@@ -25,6 +25,7 @@ from parser import parse_log_content, stream_parse_log
 import db
 import store_meta
 import mail_limits
+import firewall
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _TLS_ENABLED = False
@@ -330,6 +331,46 @@ def _background_limits():
             print(f"[ERR] limits refresh: {e}")
         time.sleep(LIMITS_TTL)
 
+# ── UFW / Fail2ban ──────────────────────────────────────────────────────────
+_fw_lock = threading.Lock()
+
+
+def _fw_revert_at():
+    out = {}
+    for s in firewall.SERVICES:
+        try:
+            v = float(db.kv_get(f"fw_reenable_{s}", 0) or 0)
+        except (TypeError, ValueError):
+            v = 0
+        if v:
+            out[s] = v
+    return out
+
+
+def _fw_required_ports():
+    return sorted({22, int(_runtime_cfg.get("port", 9444))})
+
+
+def _background_fw_watchdog():
+    """Cadangan timer systemd: nyalakan lagi layanan yang lewat batas waktu nonaktifnya."""
+    time.sleep(20)
+    while True:
+        try:
+            for svc, at in _fw_revert_at().items():
+                if time.time() < at + 30:
+                    continue
+                st = firewall.status()
+                with _fw_lock:
+                    if st[svc].get("active") is False:
+                        ok, log_lines = firewall.enable(svc, _fw_required_ports())
+                        db.add_firewall_audit("watchdog", "", svc, "enable", None, ok, log_lines)
+                        print(f"[WARN] firewall watchdog re-enabled {svc}: ok={ok}")
+                    db.kv_set(f"fw_reenable_{svc}", 0)
+        except Exception as e:
+            print(f"[ERR] firewall watchdog: {e}")
+        time.sleep(30)
+
+
 # Start Worker Thread (dapat dimatikan untuk tool offline/pengujian)
 if os.getenv("ZMT_NO_SYNC", "") != "1":
     sync_thread = threading.Thread(target=_background_log_sync, daemon=True)
@@ -337,6 +378,7 @@ if os.getenv("ZMT_NO_SYNC", "") != "1":
     if _runtime_cfg.get("store_scan", True):
         threading.Thread(target=_background_store_scan, daemon=True).start()
     threading.Thread(target=_background_limits, daemon=True).start()
+    threading.Thread(target=_background_fw_watchdog, daemon=True).start()
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
@@ -547,6 +589,12 @@ class TrackerHandler(BaseHTTPRequestHandler):
             return
 
         # Batas ukuran pesan & lampiran (read-only)
+        if path == "/api/firewall":
+            st = firewall.status(_fw_revert_at())
+            self._send_json({"status": st, "editable": _limits_editable(),
+                             "audit": db.list_firewall_audit(8)})
+            return
+
         if path == "/api/limits":
             data = _refresh_limits(force=qget("refresh") == "1") or {}
             try:
@@ -722,6 +770,71 @@ class TrackerHandler(BaseHTTPRequestHandler):
             _last_manual_sync[0] = now
             _sync_wakeup.set()
             self._send_json({"ok": True, "sync": _sync_status})
+            return
+
+        # Enable / disable sementara UFW dan Fail2ban (password wajib, audit)
+        if path == "/api/firewall":
+            ip = self.client_address[0]
+            if not _limits_editable():
+                self._send_json({"error": "Kontrol firewall dinonaktifkan (login dashboard tidak aktif)"}, 403)
+                return
+            origin = self.headers.get("Origin", "")
+            host = self.headers.get("Host", "")
+            if self.headers.get("X-ZMT-Request", "") != "firewall" or (origin and urlparse(origin).netloc != host):
+                self._send_json({"error": "Permintaan ditolak (CSRF check)"}, 403)
+                return
+            try:
+                data = json.loads(body.decode("utf-8")) if body else {}
+                if not isinstance(data, dict):
+                    raise ValueError
+            except ValueError:
+                self._send_json({"error": "JSON tidak valid"}, 400)
+                return
+            svc, action = data.get("service"), data.get("action")
+            if svc not in firewall.SERVICES or action not in ("enable", "disable"):
+                self._send_json({"error": "service/action tidak valid"}, 400)
+                return
+            minutes = data.get("minutes")
+            if action == "disable":
+                if isinstance(minutes, bool) or minutes not in firewall.DURATIONS_MIN:
+                    self._send_json({"error": "Pilih durasi 5, 15 atau 60 menit"}, 400)
+                    return
+                if data.get("confirm") != svc:
+                    self._send_json({"error": f"Ketik '{svc}' untuk konfirmasi"}, 400)
+                    return
+            else:
+                minutes = None
+            if _login_blocked(ip):
+                self._send_json({"error": "Terlalu banyak percobaan password, coba lagi nanti"}, 429)
+                return
+            pwd = data.get("password", "")
+            if not isinstance(pwd, str) or not _verify_password(pwd, _runtime_cfg.get("password_hash", "")):
+                _login_failed(ip)
+                print(f"[WARN] firewall {action} {svc}: wrong password from {ip}")
+                self._send_json({"error": "Password salah"}, 401)
+                return
+            if not _fw_lock.acquire(blocking=False):
+                self._send_json({"error": "Perubahan lain sedang diproses"}, 409)
+                return
+            try:
+                user = _runtime_cfg.get("username", "")
+                try:
+                    if action == "enable":
+                        ok, log_lines = firewall.enable(svc, _fw_required_ports())
+                        if ok:
+                            db.kv_set(f"fw_reenable_{svc}", 0)
+                    else:
+                        ok, log_lines = firewall.disable(svc, minutes)
+                        if ok:
+                            db.kv_set(f"fw_reenable_{svc}", time.time() + minutes * 60)
+                except firewall.FirewallError as e:
+                    ok, log_lines = False, [str(e)]
+                print(f"[INFO] firewall {action} {svc} ({minutes or '-'} min) by {user}@{ip}: ok={ok}")
+                db.add_firewall_audit(user, ip, svc, action, minutes, ok, log_lines)
+                self._send_json({"ok": ok, "log": log_lines, "status": firewall.status(_fw_revert_at()),
+                                 "audit": db.list_firewall_audit(8)}, 200 if ok else 500)
+            finally:
+                _fw_lock.release()
             return
 
         # Ubah batas ukuran pesan & lampiran (password wajib, audit)

@@ -117,6 +117,13 @@ def init_db():
         );
         """)
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS firewall_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT DEFAULT (datetime('now','localtime')),
+            username TEXT, ip TEXT, service TEXT, action TEXT, minutes INTEGER, ok INTEGER, log TEXT
+        );
+        """)
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS security_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT NOT NULL, kind TEXT NOT NULL, ip TEXT DEFAULT '', detail TEXT DEFAULT '',
@@ -655,6 +662,31 @@ def list_limits_audit(limit=10):
                 d[k] = json.loads(d[k] or "[]")
             except ValueError:
                 d[k] = []
+        out.append(d)
+    return out
+
+
+def add_firewall_audit(username, ip, service, action, minutes, ok, log_lines):
+    conn = get_db()
+    with conn:
+        conn.execute("INSERT INTO firewall_audit (username, ip, service, action, minutes, ok, log) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (username, ip, service, action, minutes, 1 if ok else 0,
+                      json.dumps(log_lines, ensure_ascii=False)))
+    conn.close()
+
+
+def list_firewall_audit(limit=10):
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM firewall_audit ORDER BY id DESC LIMIT ?", (int(limit),)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["log"] = json.loads(d["log"] or "[]")
+        except ValueError:
+            d["log"] = []
         out.append(d)
     return out
 

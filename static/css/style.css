@@ -1378,3 +1378,29 @@ table.mini-table td .badge { font-size: 9px; padding: 2px 6px; }
 .txt-red { color: var(--red) !important; } .txt-amber { color: var(--amber) !important; }
 table.mini-table td.mono, .mono { font-family: var(--font-mono); }
 code.payload { color: #ff8a8a; font-size: 10px; word-break: break-all; }
+
+/* ── Firewall / Fail2ban panel ── */
+.fw-panel { margin: 12px 0; }
+.fw-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.fw-card { border: 1px solid var(--border); border-radius: 4px; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--bg-panel); }
+.fw-card.off { border-color: rgba(255,32,32,0.55); background: rgba(255,32,32,0.05); }
+.fw-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.fw-name { font-size: 12px; letter-spacing: 2px; color: var(--white); font-weight: bold; }
+.fw-state { font-size: 9px; letter-spacing: 1.5px; padding: 3px 8px; border-radius: 3px; border: 1px solid; }
+.fw-state.on { color: var(--green); border-color: rgba(0,255,65,0.5); background: rgba(0,255,65,0.08); }
+.fw-state.off { color: var(--red); border-color: rgba(255,32,32,0.6); background: rgba(255,32,32,0.1); }
+.fw-detail { font-size: 10px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.fw-jail { border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; color: var(--white); }
+.fw-jail b { color: var(--amber); font-weight: normal; }
+.fw-count { font-size: 10px; color: var(--amber); }
+.fw-count b { font-family: var(--font-mono); font-weight: normal; font-size: 12px; }
+.fw-count-none { color: var(--red); }
+.fw-actions { display: flex; justify-content: flex-end; }
+.fw-btn-off { border-color: rgba(255,32,32,0.6) !important; color: var(--red) !important; }
+.fw-btn-on { border-color: rgba(0,255,65,0.6) !important; color: var(--green) !important; }
+.fw-audit { margin-top: 10px; }
+.fw-ok { color: var(--green); }
+.fw-fail { color: var(--red); }
+.fw-seg { align-self: flex-start; }
+.fw-audit-title { font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--green-dim); margin-bottom: 6px; }
+#fw-modal [hidden] { display: none !important; }
