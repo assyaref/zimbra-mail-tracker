@@ -224,6 +224,7 @@ def sync_logs_once(log_dir):
                         touched += db.insert_records(batch)
                     new_pos = pos
                 db.upsert_queue_meta(sink)
+                db.insert_security_events(sink.get("events"))
                 db.set_offset(conn, fpath, 0 if is_gz else new_pos, st.st_mtime, st.st_ino)
                 conn.commit()
                 processed += 1
@@ -235,6 +236,9 @@ def sync_logs_once(log_dir):
         conn.close()
     _sync_status["last_enrichment"] = {k: v for k, v in db.enrich_from_meta().items() if v}
     return processed, touched
+
+_sync_wakeup = threading.Event()
+_last_manual_sync = [0.0]
 
 def _background_log_sync():
     """Background thread yang membaca dan mengimpor SEMUA log mail secara terus menerus."""
@@ -250,6 +254,8 @@ def _background_log_sync():
                 _sync_status["total_records"] = touched
                 _sync_status["last_duration_s"] = round(time.time() - t0, 2)
                 _sync_status["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if datetime.now().minute == 0:
+                    db.prune_security_events(int(_runtime_cfg.get("security_event_retention_days", 90)))
         except Exception as e:
             _sync_status["last_error"] = str(e)
             print(f"[ERR] Background log sync: {e}")
@@ -258,7 +264,8 @@ def _background_log_sync():
             _sync_status["running"] = False
 
         interval = int(_runtime_cfg.get("auto_load_interval", 30))
-        time.sleep(max(10, interval))
+        _sync_wakeup.wait(timeout=max(10, interval))
+        _sync_wakeup.clear()
 
 # ── Background Worker: Zimbra store metadata (To/Cc/lampiran) ────────────────
 _store_status = {"last_scan": "Never", "files": 0, "messages": 0, "subjects_filled": 0, "last_error": ""}
@@ -521,6 +528,24 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self._send_json(vitals)
             return
 
+        # Statistik
+        if path == "/api/stats":
+            try:
+                days = int(qget("days", "30"))
+            except ValueError:
+                days = 30
+            self._send_json(db.stats_overview(days))
+            return
+
+        # Alerts (dihitung dari data; tidak mengirim notifikasi)
+        if path == "/api/alerts":
+            lim = (_limits_cache.get("data") or {}).get("effective_message_limit")
+            data = db.compute_alerts(_runtime_cfg.get("alert_thresholds"), _sync_status, lim)
+            data["sync"] = _sync_status
+            data["store_scan"] = _store_status
+            self._send_json(data)
+            return
+
         # Batas ukuran pesan & lampiran (read-only)
         if path == "/api/limits":
             data = _refresh_limits(force=qget("refresh") == "1") or {}
@@ -574,7 +599,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
                 "per_page": per_page,
                 "total_pages": total_pages,
                 "stats": stats,
-                "chart": [],
+                "chart": db.traffic_by_day(7),
                 "is_demo": total == 0,
             })
             return
@@ -584,6 +609,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
             rows, _, _ = db.query_emails(
                 q=qget("q").strip(), status=qget("status").lower(), main_class=qget("main_class").lower(),
                 auth_domain=qget("auth_domain").lower(), date_from=qget("date_from"), date_to=qget("date_to"),
+                sort_col=qget("sort", "timestamp"), sort_dir=qget("dir", "desc"),
                 page=1, per_page=100000,
                 include_internal=qget("include_internal") in ("1", "true", "yes"),
             )
@@ -684,6 +710,20 @@ class TrackerHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Unauthorized"}, 401)
             return
 
+        # Sinkronisasi log sekarang (membangunkan thread sync; dibatasi 1x/30 detik)
+        if path == "/api/sync":
+            if self.headers.get("X-ZMT-Request", "") != "sync":
+                self._send_json({"error": "Permintaan ditolak (CSRF check)"}, 403)
+                return
+            now = time.time()
+            if now - _last_manual_sync[0] < 30:
+                self._send_json({"ok": False, "error": "Tunggu sebentar sebelum sync berikutnya", "sync": _sync_status}, 429)
+                return
+            _last_manual_sync[0] = now
+            _sync_wakeup.set()
+            self._send_json({"ok": True, "sync": _sync_status})
+            return
+
         # Ubah batas ukuran pesan & lampiran (password wajib, audit)
         if path == "/api/limits":
             ip = self.client_address[0]
@@ -757,7 +797,11 @@ class TrackerHandler(BaseHTTPRequestHandler):
                         text = payload.decode("utf-8", errors="ignore")
                         records = parse_log_content(text)
                         count = db.insert_records(records)
-                        self._send_json({"success": True, "count": count})
+                        fn = ""
+                        hdr = part[:header_end].decode("utf-8", "ignore")
+                        if 'filename="' in hdr:
+                            fn = hdr.split('filename="', 1)[1].split('"', 1)[0][:200]
+                        self._send_json({"success": True, "count": count, "parsed": len(records), "filename": fn})
                         return
             self._send_json({"error": "Upload failed"}, 400)
             return
