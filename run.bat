@@ -1,7 +1,7 @@
 @echo off
 echo.
 echo  ============================================
-echo   ZIMBRA MAIL TRACKER - INTEL SYSTEM v2.0
+echo   ZIMGUARD - ZIMBRA SECURITY ^& MAIL OPERATIONS
 echo  ============================================
 echo.
 
@@ -11,7 +11,7 @@ if errorlevel 1 (
     pause & exit /b 1
 )
 
-echo [*] Starting Zimbra Mail Tracker (zero dependencies)...
+echo [*] Starting ZimGuard (zero dependencies)...
 echo [*] Open browser: http://localhost:5000
 echo [*] Press Ctrl+C to stop.
 echo.

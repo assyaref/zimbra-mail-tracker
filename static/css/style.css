@@ -1,5 +1,5 @@
 /* ============================================================
-   ZIMBRA MAIL TRACKER — FBI/CIA TACTICAL UI
+   ZIMGUARD — FBI/CIA TACTICAL UI
    Dark Intelligence Surveillance System
    ============================================================ */
 
@@ -179,8 +179,7 @@ body::after {
 }
 
 .logo-emblem {
-  width: 50px; height: 50px;
-  border: 2px solid var(--green);
+  width: 56px; height: 56px;
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-family: var(--font-title);
@@ -1448,3 +1447,11 @@ code.payload { color: #ff8a8a; font-size: 10px; word-break: break-all; }
 .zv-link { color: var(--amber); }
 .zv-body .lf-actions { margin-top: 2px; }
 @media (max-width: 560px) { .zv-hero { grid-template-columns: 1fr; } .zv-arrow { display: none; } .zv-row { grid-template-columns: 1fr; gap: 2px; } }
+
+/* ── ZimGuard seal (gambar) ── */
+img.logo-emblem { display: block; object-fit: contain; animation: seal-glow 3s ease-in-out infinite; }
+@keyframes seal-glow {
+  0%, 100% { box-shadow: 0 0 10px rgba(201,162,39,0.30); }
+  50%      { box-shadow: 0 0 22px rgba(201,162,39,0.60), 0 0 4px rgba(0,255,65,0.35); }
+}
+@media (prefers-reduced-motion: reduce) { img.logo-emblem { animation: none; } }

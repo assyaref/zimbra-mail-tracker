@@ -1,5 +1,5 @@
 """
-Konfigurasi Zimbra Mail Tracker
+Konfigurasi ZimGuard (sebelumnya Zimbra Mail Tracker)
 Sesuaikan dengan lingkungan server Anda.
 """
 
@@ -16,8 +16,8 @@ LOG_DIR = os.getenv("ZMT_LOG_DIR", "/var/log")
 LOG_PATTERN = os.getenv("ZMT_LOG_PATTERN", "maillog")  # maillog / mail.log / zimbra.log
 
 # ── App Info ──────────────────────────────────────────────────────────────────
-APP_NAME = "ZIMBRA MAIL TRACKER"
-APP_SUBTITLE = "INTELLIGENCE MAIL SURVEILLANCE SYSTEM"
+APP_NAME = "ZIMGUARD"
+APP_SUBTITLE = "ZIMBRA SECURITY & MAIL OPERATIONS"
 APP_VERSION = "v2.1.0"
-AGENCY_CODE = "ZMT-INTEL"
+AGENCY_CODE = "ZIMGUARD"
 CLASSIFICATION = "CONFIDENTIAL"

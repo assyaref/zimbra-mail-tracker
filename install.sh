@@ -1,5 +1,5 @@
 #!/bin/bash
-# ZIMBRA MAIL TRACKER installer — jalankan sebagai root di VPS Zimbra
+# ZIMGUARD (zimbra-mail-tracker) installer — jalankan sebagai root di VPS Zimbra
 # Pola instalasi sama seperti ZIMMON (/opt/zimbra-mail-tracker + systemd + HTTPS)
 set -e
 [ "$(id -u)" = 0 ] || { echo "Jalankan sebagai root (sudo bash install.sh)"; exit 1; }
@@ -14,7 +14,7 @@ HOST=$(su - zimbra -c "zmhostname" 2>/dev/null || hostname -f)
 
 echo ""
 echo "=================================================="
-echo "  ZIMBRA MAIL TRACKER — INTEL SYSTEM INSTALLER"
+echo "  ZIMGUARD — ZIMBRA SECURITY & MAIL OPERATIONS INSTALLER"
 echo "=================================================="
 echo ""
 
@@ -71,7 +71,7 @@ ln -sf "$DIR/zmt-doctor.sh" /usr/local/bin/zmt-doctor
 # 5. Create systemd service
 cat > "/etc/systemd/system/${SERVICE}.service" <<EOF
 [Unit]
-Description=Zimbra Mail Tracker — Intel Surveillance System
+Description=ZimGuard — Zimbra Security & Mail Operations
 After=network.target
 
 [Service]
@@ -100,7 +100,7 @@ fi
 
 echo ""
 echo "=================================================="
-echo "  [OK] ZIMBRA MAIL TRACKER TERPASANG & AKTIF!"
+echo "  [OK] ZIMGUARD TERPASANG & AKTIF!"
 echo "=================================================="
 echo "  URL      : https://${HOST}:${PORT}"
 echo "  Service  : systemctl status $SERVICE"

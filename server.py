@@ -1,5 +1,5 @@
 """
-Zimbra Mail Tracker — Standalone Python Server with Persistent DB & Background Log Sync
+ZimGuard (formerly Zimbra Mail Tracker) — Standalone Python Server with Persistent DB & Background Log Sync
 Zero external dependencies. Runs via standard library.
 """
 
@@ -410,7 +410,7 @@ if os.getenv("ZMT_NO_SYNC", "") != "1":
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
-    server_version = "ZMT-Intel/2.0"
+    server_version = "ZimGuard"
     sys_version = ""
     timeout = 60
 

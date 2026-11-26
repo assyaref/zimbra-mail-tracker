@@ -1,9 +1,14 @@
-# 📡 ZIMBRA MAIL TRACKER — INTEL SYSTEM
+# 🛡️ ZIMGUARD — Zimbra Security & Mail Operations
 
-Aplikasi tracking & analisis log email Zimbra bergaya **FBI/CIA Intelligence Console**.
+*Sebelumnya bernama **Zimbra Mail Tracker**. Nama teknis tetap sama: layanan `zimbra-mail-tracker`, folder `/opt/zimbra-mail-tracker`, konfigurasi `/etc/zimbra-mail-tracker`.*
+
+Konsol operasional & keamanan untuk server Zimbra: pelacakan email, statistik, deteksi serangan, kontrol UFW/Fail2ban, batas ukuran pesan, dan cek versi Zimbra. Bergaya **FBI/CIA Intelligence Console**.
 Berjalan **standalone tanpa dependensi eksternal** (cukup Python 3 stdlib), bisa dipasang sebagai **systemd service** di VPS Zimbra persis seperti **ZIMMON**.
 
 ## ✨ Fitur Utama
+- **Statistik & Alerts** — Grafik lalu lintas, ranking pengirim/penerima, kategori kegagalan; deteksi injeksi log, brute-force SMTP, lonjakan bounce, antrean deferred, beserta **rekomendasi penanganan**.
+- **Kontrol Keamanan** — Status & enable/disable sementara UFW dan Fail2ban (auto-aktif kembali), dengan password & audit.
+- **Manajemen Zimbra** — Ubah batas ukuran pesan/lampiran dan **cek versi Zimbra** vs rilis terbaru.
 - **Zero Dependencies** — Tidak butuh `pip install` atau Flask, cukup `python3` bawaan server.
 - **Auto-Parse Zimbra Log** — Otomatis membaca `/var/log/zimbra.log`, `/var/log/maillog`, `/var/log/mail.log` (termasuk arsip `.gz`).
 - **Status Tracking Lengkap** — `delivered`, `sent`, `bounced`, `deferred`, serta deteksi `spam` / `not-spam` (Amavis).

@@ -1,5 +1,5 @@
 /* =========================================================
-   app.js — Zimbra Mail Tracker Intelligence System
+   app.js — ZimGuard (Zimbra Security & Mail Operations)
    ========================================================= */
 
 'use strict';
