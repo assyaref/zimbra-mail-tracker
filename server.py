@@ -7,12 +7,14 @@ import os
 import io
 import csv
 import ssl
+import sys
 import json
 import time
 import base64
 import hashlib
 import secrets
 import threading
+import traceback
 import mimetypes
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +25,7 @@ from parser import parse_log_content, stream_parse_log
 import db
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_TLS_ENABLED = False
 CONF_PATH = os.getenv("ZMT_CONFIG", "/etc/zimbra-mail-tracker/config.json")
 
 # ── Runtime Config ────────────────────────────────────────────────────────────
@@ -88,18 +91,148 @@ def _save_doctor_report(report):
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
-_sessions = set()
+SESSION_TTL = int(os.getenv("ZMT_SESSION_TTL", 12 * 3600))
+_sessions = {}            # token -> expiry epoch
+_sessions_lock = threading.Lock()
 
 def _create_session():
     token = secrets.token_hex(32)
-    _sessions.add(token)
+    now = time.time()
+    with _sessions_lock:
+        for t, exp in list(_sessions.items()):
+            if exp < now:
+                del _sessions[t]
+        _sessions[token] = now + SESSION_TTL
     return token
 
 def _valid_session(token):
-    return token in _sessions
+    with _sessions_lock:
+        exp = _sessions.get(token)
+        if exp is None:
+            return False
+        if exp < time.time():
+            del _sessions[token]
+            return False
+        return True
+
+def _drop_session(token):
+    with _sessions_lock:
+        _sessions.pop(token, None)
+
+# ── Password hashing (PBKDF2; hash SHA-256 lama tetap diterima & di-upgrade) ──
+PBKDF2_ITER = 260000
+
+def _hash_password(pwd):
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), salt, PBKDF2_ITER)
+    return f"pbkdf2_sha256${PBKDF2_ITER}${salt.hex()}${dk.hex()}"
+
+def _verify_password(pwd, stored):
+    if not stored:
+        return False
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            _, iters, salt_hex, hash_hex = stored.split("$", 3)
+            dk = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), bytes.fromhex(salt_hex), int(iters))
+            return secrets.compare_digest(dk.hex(), hash_hex)
+        except (ValueError, TypeError):
+            return False
+    return secrets.compare_digest(hashlib.sha256(pwd.encode("utf-8")).hexdigest(), stored)
+
+def _upgrade_password_hash(pwd):
+    """Ganti hash SHA-256 tanpa salt menjadi PBKDF2 setelah login sukses."""
+    if _runtime_cfg.get("password_hash", "").startswith("pbkdf2_sha256$") or not os.path.isfile(CONF_PATH):
+        return
+    try:
+        with open(CONF_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["password_hash"] = _hash_password(pwd)
+        tmp = CONF_PATH + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, CONF_PATH)
+        _runtime_cfg["password_hash"] = data["password_hash"]
+        print("[INFO] password_hash upgraded to PBKDF2")
+    except Exception as exc:
+        print(f"[WARN] password hash upgrade failed: {exc}")
+
+# ── Login rate limit ──────────────────────────────────────────────────────────
+_LOGIN_WINDOW = 900
+_LOGIN_MAX_FAIL = 10
+_login_fail = {}
+_login_lock = threading.Lock()
+
+def _login_blocked(ip):
+    now = time.time()
+    with _login_lock:
+        hits = [t for t in _login_fail.get(ip, []) if now - t < _LOGIN_WINDOW]
+        _login_fail[ip] = hits
+        return len(hits) >= _LOGIN_MAX_FAIL
+
+def _login_failed(ip):
+    with _login_lock:
+        _login_fail.setdefault(ip, []).append(time.time())
+
+MAX_BODY = 100 * 1024 * 1024
 
 # ── Background Worker: Log Synchronizer ───────────────────────────────────────
-_sync_status = {"running": False, "last_sync": "Never", "files_processed": 0, "total_records": 0}
+_sync_status = {"running": False, "last_sync": "Never", "files_processed": 0, "total_records": 0,
+                "last_error": "", "last_duration_s": 0, "last_enrichment": {}}
+
+LOG_PREFIXES = ("zimbra.log", "maillog", "mail.log")
+
+def _list_log_files(log_dir):
+    files = []
+    for fname in os.listdir(log_dir):
+        if fname.startswith(LOG_PREFIXES):
+            full_p = os.path.join(log_dir, fname)
+            if os.path.isfile(full_p):
+                files.append(full_p)
+    # Urutkan dari file lama ke file baru agar file hasil rotasi diproses lebih dulu
+    files.sort(key=lambda x: os.path.getmtime(x))
+    return files
+
+def sync_logs_once(log_dir):
+    """Satu siklus sinkronisasi semua log. Return (files_processed, records_touched)."""
+    conn = db.get_db()
+    processed = 0
+    touched = 0
+    try:
+        for fpath in _list_log_files(log_dir):
+            try:
+                st = os.stat(fpath)
+                is_gz = fpath.endswith(".gz")
+                if is_gz:
+                    row = conn.execute("SELECT last_mtime FROM file_offsets WHERE filepath = ?", (fpath,)).fetchone()
+                    if row and row["last_mtime"] == st.st_mtime:
+                        continue
+                    start = 0
+                else:
+                    start = db.get_offset(conn, fpath, st.st_ino, st.st_size)
+                    if start == st.st_size:
+                        db.set_offset(conn, fpath, start, st.st_mtime, st.st_ino)
+                        conn.commit()
+                        continue
+
+                sink = {}
+                new_pos = start
+                for batch, pos in stream_parse_log(fpath, start_offset=start, meta_sink=sink):
+                    if batch:
+                        touched += db.insert_records(batch)
+                    new_pos = pos
+                db.upsert_queue_meta(sink)
+                db.set_offset(conn, fpath, 0 if is_gz else new_pos, st.st_mtime, st.st_ino)
+                conn.commit()
+                processed += 1
+            except Exception as e:
+                _sync_status["last_error"] = f"{os.path.basename(fpath)}: {e}"
+                print(f"[ERR] sync {fpath}: {e}")
+                traceback.print_exc()
+    finally:
+        conn.close()
+    _sync_status["last_enrichment"] = {k: v for k, v in db.enrich_from_meta().items() if v}
+    return processed, touched
 
 def _background_log_sync():
     """Background thread yang membaca dan mengimpor SEMUA log mail secara terus menerus."""
@@ -109,69 +242,55 @@ def _background_log_sync():
             log_dir = _runtime_cfg.get("log_dir", "/var/log")
             if os.path.isdir(log_dir):
                 _sync_status["running"] = True
-                conn = db.get_db()
-                cursor = conn.cursor()
-
-                # Cari semua file log zimbra / mail
-                log_files = []
-                for fname in os.listdir(log_dir):
-                    if fname.startswith("zimbra.log") or fname.startswith("maillog") or fname.startswith("mail.log"):
-                        full_p = os.path.join(log_dir, fname)
-                        log_files.append(full_p)
-
-                # Urutkan dari file lama ke file baru agar urutan timestamp log benar
-                log_files.sort(key=lambda x: os.path.getmtime(x))
-
-                for fpath in log_files:
-                    mtime = os.path.getmtime(fpath)
-                    is_gz = fpath.endswith(".gz")
-
-                    cursor.execute("SELECT last_pos, last_mtime FROM file_offsets WHERE filepath = ?", (fpath,))
-                    row = cursor.fetchone()
-
-                    last_pos = 0
-                    if row:
-                        # Jika file .gz sudah pernah dibaca dan mtime sama, skip
-                        if is_gz and row["last_mtime"] == mtime:
-                            continue
-                        last_pos = row["last_pos"]
-
-                    # Parse secara streaming
-                    new_pos = last_pos
-                    total_in_file = 0
-                    for batch, pos in stream_parse_log(fpath, start_offset=last_pos):
-                        if batch:
-                            inserted = db.insert_records(batch)
-                            total_in_file += inserted
-                        new_pos = pos
-
-                    # Update offset file
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO file_offsets (filepath, last_pos, last_mtime)
-                        VALUES (?, ?, ?)
-                    """, (fpath, new_pos, mtime))
-                    conn.commit()
-
-                conn.close()
+                t0 = time.time()
+                processed, touched = sync_logs_once(log_dir)
+                _sync_status["files_processed"] = processed
+                _sync_status["total_records"] = touched
+                _sync_status["last_duration_s"] = round(time.time() - t0, 2)
                 _sync_status["last_sync"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                _sync_status["running"] = False
         except Exception as e:
+            _sync_status["last_error"] = str(e)
             print(f"[ERR] Background log sync: {e}")
+            traceback.print_exc()
+        finally:
             _sync_status["running"] = False
 
         interval = int(_runtime_cfg.get("auto_load_interval", 30))
         time.sleep(max(10, interval))
 
-# Start Worker Thread
-sync_thread = threading.Thread(target=_background_log_sync, daemon=True)
-sync_thread.start()
+# Start Worker Thread (dapat dimatikan untuk tool offline/pengujian)
+if os.getenv("ZMT_NO_SYNC", "") != "1":
+    sync_thread = threading.Thread(target=_background_log_sync, daemon=True)
+    sync_thread.start()
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
     server_version = "ZMT-Intel/2.0"
+    sys_version = ""
+    timeout = 60
 
     def log_message(self, format, *args):
         pass
+
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        if _TLS_ENABLED:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+        super().end_headers()
+
+    def _session_cookie(self, token):
+        secure = "; Secure" if _TLS_ENABLED else ""
+        return f"zmt_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}{secure}"
+
+    def _cookie_token(self):
+        for part in self.headers.get("Cookie", "").split(";"):
+            part = part.strip()
+            if part.startswith("zmt_session="):
+                return part.split("=", 1)[1]
+        return ""
 
     def _check_auth(self) -> bool:
         expected_user = _runtime_cfg.get("username", "")
@@ -179,25 +298,23 @@ class TrackerHandler(BaseHTTPRequestHandler):
         if not expected_user or not expected_hash:
             return True
 
-        cookie_hdr = self.headers.get("Cookie", "")
-        if cookie_hdr:
-            for part in cookie_hdr.split(";"):
-                part = part.strip()
-                if part.startswith("zmt_session="):
-                    token = part.split("=", 1)[1]
-                    if _valid_session(token):
-                        return True
+        token = self._cookie_token()
+        if token and _valid_session(token):
+            return True
 
         auth_hdr = self.headers.get("Authorization", "")
         if auth_hdr.startswith("Basic "):
+            ip = self.client_address[0]
+            if _login_blocked(ip):
+                return False
             try:
                 decoded = base64.b64decode(auth_hdr[6:]).decode("utf-8")
                 user, pwd = decoded.split(":", 1)
-                pwd_hash = hashlib.sha256(pwd.encode("utf-8")).hexdigest()
-                if secrets.compare_digest(user, expected_user) and secrets.compare_digest(pwd_hash, expected_hash):
+                if secrets.compare_digest(user, expected_user) and _verify_password(pwd, expected_hash):
                     return True
+                _login_failed(ip)
             except Exception:
-                pass
+                _login_failed(ip)
         return False
 
     def _send_json(self, obj, status=200, extra_headers=None):
@@ -253,6 +370,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
         # Logout
         if path == "/logout":
+            _drop_session(self._cookie_token())
             self.send_response(302)
             self.send_header("Set-Cookie", "zmt_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
             self.send_header("Location", "/login")
@@ -355,7 +473,8 @@ class TrackerHandler(BaseHTTPRequestHandler):
             rows, total, stats = db.query_emails(
                 q=q, status=status_f, main_class=main_class_f, auth_domain=domain_f,
                 date_from=date_from, date_to=date_to, sort_col=sort_by, sort_dir=sort_dir,
-                page=page, per_page=per_page
+                page=page, per_page=per_page,
+                include_internal=qget("include_internal") in ("1", "true", "yes"),
             )
 
             total_pages = max(1, (total + per_page - 1) // per_page)
@@ -373,7 +492,12 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
         # Export CSV
         if path == "/api/export/csv":
-            rows, _, _ = db.query_emails(page=1, per_page=100000)
+            rows, _, _ = db.query_emails(
+                q=qget("q").strip(), status=qget("status").lower(), main_class=qget("main_class").lower(),
+                auth_domain=qget("auth_domain").lower(), date_from=qget("date_from"), date_to=qget("date_to"),
+                page=1, per_page=100000,
+                include_internal=qget("include_internal") in ("1", "true", "yes"),
+            )
             output = io.StringIO()
             cols = ["message_id", "timestamp", "auth_domain", "auth_username",
                     "identity", "sender", "recipient", "main_class", "subject",
@@ -394,7 +518,18 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self._send_json({"error": "Request too large"}, 413)
+            self.close_connection = True
+            return
+        if length > 65536 and path != "/api/upload":
+            self._send_json({"error": "Request too large"}, 413)
+            self.close_connection = True
+            return
         body = self.rfile.read(length) if length > 0 else b""
 
         # Login
@@ -410,16 +545,21 @@ class TrackerHandler(BaseHTTPRequestHandler):
 
             if not expected_user or not expected_hash:
                 token = _create_session()
-                cookie = f"zmt_session={token}; Path=/; HttpOnly; SameSite=Lax"
-                self._send_json({"success": True}, 200, extra_headers={"Set-Cookie": cookie})
+                self._send_json({"success": True}, 200, extra_headers={"Set-Cookie": self._session_cookie(token)})
                 return
 
-            pwd_hash = hashlib.sha256(pwd.encode("utf-8")).hexdigest()
-            if secrets.compare_digest(user, expected_user) and secrets.compare_digest(pwd_hash, expected_hash):
+            ip = self.client_address[0]
+            if _login_blocked(ip):
+                self._send_json({"success": False, "error": "TOO MANY FAILED ATTEMPTS, TRY LATER"}, 429)
+                return
+            if (isinstance(user, str) and isinstance(pwd, str)
+                    and secrets.compare_digest(user, expected_user) and _verify_password(pwd, expected_hash)):
+                _upgrade_password_hash(pwd)
                 token = _create_session()
-                cookie = f"zmt_session={token}; Path=/; HttpOnly; SameSite=Lax"
-                self._send_json({"success": True}, 200, extra_headers={"Set-Cookie": cookie})
+                self._send_json({"success": True}, 200, extra_headers={"Set-Cookie": self._session_cookie(token)})
             else:
+                _login_failed(ip)
+                print(f"[WARN] failed dashboard login from {ip}")
                 self._send_json({"success": False, "error": "ACCESS DENIED: INVALID CREDENTIALS"}, 401)
             return
 
@@ -476,19 +616,35 @@ class TrackerHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "Not found"}, 404)
 
 
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        # Handshake TLS gagal / klien putus: bukan error aplikasi.
+        if isinstance(exc, (ssl.SSLError, ConnectionError, TimeoutError, OSError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def run_server():
+    global _TLS_ENABLED
     host = _runtime_cfg.get("host", "0.0.0.0")
     port = int(_runtime_cfg.get("port", 9444))
-    httpd = ThreadingHTTPServer((host, port), TrackerHandler)
+    httpd = QuietThreadingHTTPServer((host, port), TrackerHandler)
 
     cert = _runtime_cfg.get("cert", "")
     key = _runtime_cfg.get("key", "")
     proto = "http"
     if cert and key and os.path.isfile(cert) and os.path.isfile(key):
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(certfile=cert, keyfile=key)
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        # Handshake dilakukan di thread handler (bukan di loop accept) agar klien
+        # lambat tidak memblokir server.
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
         proto = "https"
+        _TLS_ENABLED = True
 
     print(f"[*] {config.APP_NAME} running at {proto}://{host}:{port}")
     try:
