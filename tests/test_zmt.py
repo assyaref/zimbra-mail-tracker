@@ -178,5 +178,33 @@ t, w = mail_limits.validate({"per_file_mb": 5}, cur); cmds, _ = mail_limits.buil
 check("limits-edit: per-file goes to COS default", cmds == ["mc default zimbraFileUploadMaxSizePerFile 5242880"])
 db.add_limits_audit("tester", "127.0.0.1", True, [{"attr": "x", "old": 1, "new": 2}], [], ["ok"])
 check("limits-edit: audit stored and listed", db.list_limits_audit(5)[0]["changes"][0]["new"] == 2)
+
+# 11) Priority 1: security events, chart, stats, alerts
+evlog = os.path.join(tmpd, "ev.log")
+open(evlog, "w").write(
+  "2026-11-24T07:19:18.3+07:00 mail postfix/submission/smtpd[1]: warning: unknown[203.0.113.9]: SASL LOGIN authentication failed: authentication failure, sasl_username=a@ex.com\n"
+  "Nov 26 01:24:00 mail postfix/smtps/smtpd[2]: NOQUEUE: filter: RCPT from x[198.51.100.7]: <t@e>: x; to=<\"x: Service status change: localhost $(id) changed from stopped to running@x>\n"
+  "Nov 25 23:17:53 mail zmconfigd[3]: Service status change: mail.ex.com amavis changed from running to stopped\n")
+sink = {}
+for _ in P.stream_parse_log(evlog, meta_sink=sink): pass
+kinds = sorted(e[0] for e in sink["events"])
+check("events: SASL failure + injection captured, zmconfigd ignored", kinds == ["log_injection", "sasl_fail"])
+inj = [e for e in sink["events"] if e[0] == "log_injection"][0]
+check("events: injection IP and payload extracted", inj[2] == "198.51.100.7" and inj[3] == "$(id)")
+n1 = db.insert_security_events(sink["events"]); n2 = db.insert_security_events(sink["events"])
+check("events: duplicates ignored", n1 == 2 and n2 == 0)
+tr = db.traffic_by_day(7)
+check("chart: 7 consecutive days incl. today", len(tr) == 7 and tr[-1]["date"] == __import__("datetime").date.today().isoformat())
+check("chart: today's deliveries counted, internal hop excluded", tr[-1]["delivered"] >= 1)
+check("categorize: bare domain = transport error", db.categorize_reason("example.com").startswith("Error transport"))
+check("categorize: remote host name ignored", db.categorize_reason("host mx.spamexperts.com[1.2.3.4] said: 550 Mailbox is full") == "Mailbox penuh")
+st = db.stats_overview(30)
+check("stats: kpi + hourly(24) + trend(30)", st["kpi"]["deliveries"] >= 1 and len(st["hourly"]) == 24 and len(st["trend"]) == 30)
+c.execute("update security_events set ts=datetime('now','localtime')"); c.commit()
+al = db.compute_alerts({"sasl_fail_ip_24h": 1})
+codes = {a["code"] for a in al["alerts"]}
+check("alerts: injection + brute-force raised", {"log_injection", "sasl_bruteforce"} <= codes)
+check("alerts: sorted by severity", al["alerts"][0]["severity"] == "critical")
+check("alerts: stale sync detected", any(a["code"] == "sync_stale" for a in db.compute_alerts(sync_status={"last_sync": "2020-01-01 00:00:00"})["alerts"]))
 print(f"\nRESULT: {ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

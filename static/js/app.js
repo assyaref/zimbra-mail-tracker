@@ -324,67 +324,89 @@ function renderPagination(total, page, totalPages, perPage) {
   addBtn('»', totalPages, page >= totalPages);
 }
 
-// ── Chart (canvas bar chart) ───────────────────────────────
-let chartInstance = null;
+// ── Chart (canvas bar chart, generik) ─────────────────────
+// series: [{name, color, values[]}]; mode 'group' | 'stack'
+function drawBarChart(canvas, labels, series, opts = {}) {
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
+  const cssH = opts.height || parseInt(canvas.getAttribute('height')) || 120;
+  canvas.style.height = cssH + 'px';
+  canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  const mode = opts.mode || 'group';
+  const n = labels.length;
+  const padL = 34, padR = 8, padT = 10, padB = 18;
+  const W = cssW - padL - padR, H = cssH - padT - padB;
+  const totals = labels.map((_, i) => series.reduce((s, se) => s + (se.values[i] || 0), 0));
+  const maxV = Math.max(1, ...(mode === 'stack' ? totals : series.flatMap(se => se.values)));
+  const nice = (v) => { const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; };
+  const top = nice(maxV);
+
+  ctx.font = '9px "Share Tech Mono", monospace';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + H - (H / 4) * i;
+    ctx.strokeStyle = 'rgba(0,61,16,0.55)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, Math.round(y) + 0.5); ctx.lineTo(padL + W, Math.round(y) + 0.5); ctx.stroke();
+    ctx.fillStyle = '#2a5c38'; ctx.textAlign = 'right';
+    ctx.fillText(Math.round(top / 4 * i).toLocaleString(), padL - 5, y);
+  }
+  const gw = W / Math.max(n, 1);
+  const inner = Math.min(gw * 0.72, 46);
+  const bw = mode === 'stack' ? inner : Math.max(2, (inner - (series.length - 1) * 2) / series.length);
+  const boxes = [];
+  labels.forEach((lab, i) => {
+    const x0 = padL + gw * i + (gw - inner) / 2;
+    let yAcc = padT + H;
+    series.forEach((se, k) => {
+      const v = se.values[i] || 0;
+      const h = v ? Math.max(2, (v / top) * H) : 0;
+      const x = mode === 'stack' ? x0 : x0 + k * (bw + 2);
+      const y = mode === 'stack' ? yAcc - h : padT + H - h;
+      if (h) { ctx.fillStyle = se.color; ctx.fillRect(x, y, bw, h); }
+      if (mode === 'stack') yAcc -= h;
+    });
+    boxes.push({ x: padL + gw * i, w: gw, i });
+    const every = Math.ceil(n / Math.max(1, Math.floor(W / 46)));
+    if (i % every === 0) {
+      ctx.fillStyle = '#4a8a5c'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+      ctx.fillText(lab, padL + gw * i + gw / 2, cssH - 4); ctx.textBaseline = 'middle';
+    }
+  });
+  // tooltip
+  let tip = canvas.parentElement.querySelector('.chart-tip');
+  if (!tip) { tip = document.createElement('div'); tip.className = 'chart-tip'; canvas.parentElement.style.position = 'relative'; canvas.parentElement.appendChild(tip); }
+  canvas.onmousemove = (e) => {
+    const r = canvas.getBoundingClientRect(); const mx = e.clientX - r.left;
+    const bx = boxes.find(b => mx >= b.x && mx < b.x + b.w);
+    if (!bx) { tip.style.display = 'none'; return; }
+    const title = (opts.tipLabels || labels)[bx.i];
+    tip.innerHTML = `<b>${esc(title)}</b>` + series.map(se =>
+      `<div><i style="background:${se.color}"></i>${esc(se.name)}: <b>${(se.values[bx.i] || 0).toLocaleString()}</b></div>`).join('');
+    tip.style.display = 'block';
+    const left = Math.min(Math.max(0, bx.x + bx.w / 2 - tip.offsetWidth / 2), r.width - tip.offsetWidth);
+    tip.style.left = left + 'px'; tip.style.top = (canvas.offsetTop + 4) + 'px';
+  };
+  canvas.onmouseleave = () => { tip.style.display = 'none'; };
+}
+
+let _lastChart = [];
 function renderChart(chartData) {
+  _lastChart = chartData || [];
   const canvas = document.getElementById('chart-canvas');
   if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-
-  // Set canvas dimensions
-  canvas.width  = canvas.offsetWidth;
-  canvas.height = 90;
-
-  const labels    = chartData.map(d => d.date.slice(5));
-  const delivered = chartData.map(d => d.delivered);
-  const bounced   = chartData.map(d => d.bounced);
-  const spam      = chartData.map(d => d.spam);
-
-  const maxVal = Math.max(...delivered, ...bounced, ...spam, 1);
-  const n = labels.length;
-  const W = canvas.width;
-  const H = canvas.height;
-  const padL = 10, padR = 10, padT = 10, padB = 20;
-  const plotW = W - padL - padR;
-  const plotH = H - padT - padB;
-  const barGroupW = plotW / n;
-  const barW = Math.floor(barGroupW * 0.25);
-
-  ctx.clearRect(0, 0, W, H);
-
-  // Grid lines
-  ctx.strokeStyle = 'rgba(0,61,16,0.5)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = padT + (plotH / 4) * i;
-    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-  }
-
-  // Bars
-  chartData.forEach((d, i) => {
-    const x = padL + i * barGroupW + barGroupW * 0.1;
-
-    const drawBar = (val, color, offset) => {
-      if (!val) return;
-      const h = Math.max(2, (val / maxVal) * plotH);
-      const y = padT + plotH - h;
-      ctx.fillStyle = color;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 6;
-      ctx.fillRect(x + offset, y, barW, h);
-      ctx.shadowBlur = 0;
-    };
-
-    drawBar(d.delivered, '#00ff41', 0);
-    drawBar(d.bounced,   '#ff2020', barW + 2);
-    drawBar(d.spam,      '#cc44ff', (barW + 2) * 2);
-
-    // Label
-    ctx.fillStyle = '#2a5c38';
-    ctx.font = '9px Share Tech Mono, monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(labels[i], x + barGroupW * 0.4, H - 4);
-  });
+  const dayName = (d) => new Date(d + 'T00:00:00').toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short' });
+  drawBarChart(canvas, _lastChart.map(d => d.date.slice(5)), [
+    { name: 'Delivered', color: '#00ff41', values: _lastChart.map(d => d.delivered) },
+    { name: 'Bounced', color: '#ff2020', values: _lastChart.map(d => d.bounced) },
+    { name: 'Spam', color: '#cc44ff', values: _lastChart.map(d => d.spam) },
+  ], { height: 110, tipLabels: _lastChart.map(d => dayName(d.date)) });
+  const tot = _lastChart.reduce((a, d) => a + d.delivered, 0);
+  const el = document.getElementById('chart-total');
+  if (el) el.textContent = tot ? `· ${tot.toLocaleString()} terkirim` : '';
 }
 
 // ── Column chooser ─────────────────────────────────────────
@@ -464,7 +486,7 @@ async function uploadFile(file) {
     const res = await fetch('/api/upload', { method: 'POST', body: form });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    showToast(`✔ Loaded ${data.count.toLocaleString()} records from ${data.filename}`);
+    showToast(`✔ ${data.count.toLocaleString()} record dimuat dari ${data.filename || 'file'}`);
     state.page = 1;
     await load();
   } catch (err) {
@@ -473,18 +495,60 @@ async function uploadFile(file) {
   }
 }
 
-// ── Clear data ─────────────────────────────────────────────
-async function clearData() {
-  await fetch('/api/clear', { method: 'POST' });
-  state.page = 1;
-  showToast('Data cleared — showing demo data', 'warning');
-  load();
+// ── Export CSV ─────────────────────────────────────────────
+function currentFilterParams() {
+  const p = new URLSearchParams({ sort: state.sort, dir: state.sortDir });
+  if (state.search)          p.set('q', state.search);
+  if (state.statusFilter)    p.set('status', state.statusFilter);
+  if (state.mainClassFilter) p.set('main_class', state.mainClassFilter);
+  if (state.domainFilter)    p.set('auth_domain', state.domainFilter);
+  if (state.dateFrom)        p.set('date_from', state.dateFrom);
+  if (state.dateTo)          p.set('date_to', state.dateTo);
+  return p;
 }
 
-// ── Export CSV ─────────────────────────────────────────────
 function exportCSV() {
-  window.location = '/api/export/csv';
-  showToast('Exporting CSV…');
+  const p = currentFilterParams();
+  const filtered = [...p.keys()].some(k => !['sort', 'dir'].includes(k));
+  window.location = '/api/export/csv?' + p.toString();
+  showToast(filtered ? `Exporting CSV (filter aktif, ${state.totalRows.toLocaleString()} baris)…` : 'Exporting CSV…');
+}
+
+function resetFilters() {
+  Object.assign(state, { search: '', statusFilter: '', mainClassFilter: '', domainFilter: '', dateFrom: '', dateTo: '',
+                         sort: 'timestamp', sortDir: 'desc', page: 1 });
+  document.getElementById('search-input').value = '';
+  document.getElementById('status-filter').value = '';
+  document.getElementById('class-filter').value = '';
+  renderHeader();
+  load();
+  showToast('Filter direset');
+}
+
+async function syncNow(btn) {
+  btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = '⟳ Syncing…';
+  try {
+    const res = await fetch('/api/sync', { method: 'POST', headers: { 'X-ZMT-Request': 'sync' } });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+    const before = d.sync && d.sync.last_sync;
+    // tunggu siklus sync selesai (maks ~30 detik)
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const s2 = await fetch('/api/session', { cache: 'no-store' }).then(r => r.json()).catch(() => null);
+      if (s2 && s2.sync && s2.sync.last_sync !== before && !s2.sync.running) {
+        showToast(`Sync selesai: ${s2.sync.files_processed} file, ${s2.sync.total_records} record diperbarui`);
+        break;
+      }
+    }
+    await load();
+  } catch (e) {
+    showToast('Sync gagal: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = label;
+  }
 }
 
 // ── Detail Modal ───────────────────────────────────────────
@@ -872,6 +936,174 @@ function initLimitsForm() {
   });
 }
 
+// ── Views: Mail Tracker / Statistics / Alerts ──────────────
+const VIEWS = ['tracker', 'stats', 'alerts'];
+let _statsDays = 30;
+
+function showView(v) {
+  if (!VIEWS.includes(v)) v = 'tracker';
+  document.getElementById('main-content').dataset.view = v;
+  document.querySelectorAll('.nav-btn[data-view]').forEach(b => {
+    const on = b.dataset.view === v;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-current', on ? 'page' : 'false');
+  });
+  if (location.hash !== '#' + v) history.replaceState(null, '', v === 'tracker' ? location.pathname : '#' + v);
+  document.getElementById('main-content').scrollTop = 0;
+  if (v === 'stats') loadStats();
+  if (v === 'alerts') loadAlerts();
+  if (v === 'tracker' && _lastChart.length) requestAnimationFrame(() => renderChart(_lastChart));
+}
+
+const fmtNum = (n) => (n === null || n === undefined) ? '—' : Number(n).toLocaleString();
+
+function rankList(rows, valueKey = 'messages', extra, fmt = fmtNum) {
+  if (!rows || !rows.length) return '<div class="dnote">Tidak ada data.</div>';
+  const max = Math.max(...rows.map(r => r[valueKey] || 0), 1);
+  return `<ol class="rank">${rows.map(r => `
+    <li><span class="rank-name" title="${esc(r.name)}">${esc(r.name || '—')}</span>
+        <span class="rank-val">${fmt(r[valueKey])}${extra ? extra(r) : ''}</span>
+        <span class="rank-bar" style="width:${(100 * (r[valueKey] || 0) / max).toFixed(1)}%"></span></li>`).join('')}</ol>`;
+}
+
+async function loadStats() {
+  const sub = document.getElementById('stats-sub');
+  sub.textContent = 'Memuat…';
+  let d;
+  try {
+    const res = await fetch('/api/stats?days=' + _statsDays, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) { sub.textContent = 'Gagal memuat statistik: ' + e.message; return; }
+  const k = d.kpi || {};
+  sub.textContent = `Periode ${d.days} hari (sejak ${d.since}) · tanpa hop internal amavis`;
+  const kpi = (label, val, note, tone = '') => `<div class="kpi ${tone}"><div class="kpi-label">${label}</div><div class="kpi-val">${val}</div><div class="kpi-note">${note}</div></div>`;
+  document.getElementById('stats-kpi').innerHTML =
+    kpi('Pesan', fmtNum(k.messages), `${fmtNum(k.deliveries)} pengiriman ke penerima`) +
+    kpi('Terkirim', fmtNum(k.ok), `${fmtNum(k.local_deliveries)} lokal · ${fmtNum(k.external_deliveries)} eksternal`, 'tone-green') +
+    kpi('Bounce rate', (k.bounce_rate ?? 0) + '%', `${fmtNum(k.bounced)} bounced`, k.bounce_rate > 2 ? 'tone-red' : '') +
+    kpi('Deferred', fmtNum(k.deferred), 'percobaan tertunda', k.deferred ? 'tone-amber' : '') +
+    kpi('Spam', fmtNum(k.spam), 'verdict amavis', k.spam ? 'tone-purple' : '') +
+    kpi('Volume', fmtBytes(k.bytes), `rata-rata ${fmtBytes(Math.round(k.avg_size || 0))} · maks ${fmtBytes(k.max_size)}`) +
+    kpi('Pengirim', fmtNum(k.senders), `${fmtNum(k.recipients)} penerima unik`);
+
+  const t = d.trend || [];
+  drawBarChart(document.getElementById('stats-trend'), t.map(x => x.date.slice(5)), [
+    { name: 'Delivered', color: '#00ff41', values: t.map(x => x.delivered) },
+    { name: 'Deferred', color: '#ffb000', values: t.map(x => x.deferred) },
+    { name: 'Bounced', color: '#ff2020', values: t.map(x => x.bounced) },
+  ], { mode: 'stack', height: 170, tipLabels: t.map(x => x.date) });
+  drawBarChart(document.getElementById('stats-hourly'), d.hourly.map((_, h) => String(h).padStart(2, '0')), [
+    { name: 'Pesan', color: '#00d4ff', values: d.hourly },
+  ], { height: 170, tipLabels: d.hourly.map((_, h) => `${String(h).padStart(2, '0')}:00–${String(h).padStart(2, '0')}:59`) });
+
+  const fc = d.failure_categories || [];
+  document.getElementById('stats-failures').innerHTML = fc.length ? `<table class="mini-table">
+      <colgroup><col><col style="width:70px"><col style="width:70px"></colgroup>
+      <thead><tr><th>Kategori</th><th class="num">Bounced</th><th class="num">Deferred</th></tr></thead>
+      <tbody>${fc.map(c => `<tr title="${esc(c.example)}"><td class="wrap">${esc(c.category)}<div class="row-reason dmuted">${esc(c.example)}</div></td>
+        <td class="num ${c.bounced ? 'txt-red' : ''}">${fmtNum(c.bounced)}</td><td class="num ${c.deferred ? 'txt-amber' : ''}">${fmtNum(c.deferred)}</td></tr>`).join('')}</tbody></table>`
+    : '<div class="dnote">Tidak ada kegagalan pengiriman. 👍</div>';
+  document.getElementById('stats-top-senders').innerHTML = rankList(d.top_senders);
+  document.getElementById('stats-top-recipients').innerHTML = rankList(d.top_recipients);
+  document.getElementById('stats-top-rdomains').innerHTML = rankList(d.top_recipient_domains, 'messages',
+    r => r.bounced ? ` <span class="txt-red" title="bounced">· ${r.bounced}✕</span>` : '');
+  document.getElementById('stats-top-sdomains').innerHTML = rankList(d.top_sender_domains);
+  const a = d.attachments || {}, types = d.attachment_types || [];
+  document.getElementById('stats-attachments').innerHTML = `
+    <div class="att-kpis">
+      <div><b>${fmtNum(a.messages)}</b><span>pesan berlampiran</span></div>
+      <div><b>${fmtNum(a.files)}</b><span>file</span></div>
+      <div><b>${fmtBytes(a.bytes)}</b><span>total ukuran</span></div>
+      <div><b>${fmtBytes(a.max_bytes)}</b><span>terbesar per pesan</span></div>
+    </div>
+    ${types.length ? rankList(types.map(x => ({ name: '.' + x.ext + ' · ' + fmtNum(x.files) + ' file', bytes: x.bytes })), 'bytes', null, fmtBytes) : ''}`;
+}
+
+const SEV = { critical: ['KRITIS', 'sev-critical'], high: ['TINGGI', 'sev-high'], medium: ['SEDANG', 'sev-medium'], info: ['INFO', 'sev-info'] };
+
+function updateAlertsBadge(alerts) {
+  const b = document.getElementById('alerts-badge');
+  if (!b) return;
+  const n = alerts.filter(a => a.severity === 'critical' || a.severity === 'high').length;
+  b.hidden = !n; b.textContent = n;
+  b.className = 'nav-badge' + (alerts.some(a => a.severity === 'critical') ? ' crit' : '');
+}
+
+async function loadAlerts(badgeOnly = false) {
+  let d;
+  try {
+    const res = await fetch('/api/alerts', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) {
+    if (!badgeOnly) document.getElementById('alerts-sub').textContent = 'Gagal memuat alerts: ' + e.message;
+    return;
+  }
+  updateAlertsBadge(d.alerts || []);
+  if (badgeOnly) return;
+  const al = d.alerts || [];
+  document.getElementById('alerts-sub').innerHTML =
+    `${al.length ? `<b>${al.length}</b> alert aktif` : 'Tidak ada alert aktif'} · sync terakhir ${esc((d.sync || {}).last_sync || '—')} · dihitung otomatis dari log &amp; database (belum mengirim notifikasi)`;
+  document.getElementById('alerts-list').innerHTML = al.length ? al.map(a => {
+    const [lbl, cls] = SEV[a.severity] || ['INFO', 'sev-info'];
+    return `<div class="alert-card ${cls}"><span class="sev">${lbl}</span>
+      <div class="alert-body"><div class="alert-title">${esc(a.title)}</div><div class="alert-detail">${esc(a.detail)}</div></div>
+      ${a.count !== null && a.count !== undefined ? `<span class="alert-count">${fmtNum(a.count)}</span>` : ''}</div>`;
+  }).join('') : `<div class="alert-card sev-ok"><span class="sev">OK</span><div class="alert-body"><div class="alert-title">Semua normal</div><div class="alert-detail">Tidak ada kondisi yang melewati ambang batas.</div></div></div>`;
+
+  const ev = d.daily_events || [];
+  const days = [];
+  for (let i = 13; i >= 0; i--) { const dt = new Date(Date.now() - i * 86400000); days.push(dt.toLocaleDateString('sv-SE')); }
+  const byDay = Object.fromEntries(ev.map(e => [e.date, e]));
+  drawBarChart(document.getElementById('alerts-events'), days.map(x => x.slice(5)), [
+    { name: 'Injeksi log', color: '#ff2020', values: days.map(x => (byDay[x] || {}).injection || 0) },
+    { name: 'Gagal login SASL', color: '#ffb000', values: days.map(x => (byDay[x] || {}).sasl_fail || 0) },
+  ], { mode: 'stack', height: 150, tipLabels: days });
+
+  const ips = d.top_ips || [];
+  document.getElementById('alerts-ips').innerHTML = ips.length ? `<table class="mini-table">
+      <colgroup><col style="width:150px"><col style="width:90px"><col style="width:90px"><col></colgroup>
+      <thead><tr><th>IP</th><th class="num">Injeksi</th><th class="num">Gagal login</th><th>Terakhir</th></tr></thead>
+      <tbody>${ips.map(r => `<tr><td class="mono">${esc(r.ip)}</td><td class="num ${r.injection ? 'txt-red' : ''}">${fmtNum(r.injection)}</td>
+        <td class="num ${r.sasl_fail ? 'txt-amber' : ''}">${fmtNum(r.sasl_fail)}</td><td class="dmuted nowrap">${esc(r.last)}</td></tr>`).join('')}</tbody></table>
+      <div class="dnote">Blokir IP (UFW/fail2ban) belum dilakukan otomatis.</div>` : '<div class="dnote">Tidak ada event dalam 7 hari.</div>';
+
+  const inj = d.recent_injections || [];
+  document.getElementById('alerts-injections').innerHTML = inj.length ? `<table class="mini-table">
+      <colgroup><col style="width:140px"><col style="width:130px"><col></colgroup>
+      <thead><tr><th>Waktu</th><th>IP</th><th>Payload (teks, tidak dieksekusi)</th></tr></thead>
+      <tbody>${inj.map(r => `<tr><td class="dmuted nowrap">${esc(r.ts)}</td><td class="mono">${esc(r.ip || '—')}</td>
+        <td class="wrap"><code class="payload">${esc(r.detail)}</code></td></tr>`).join('')}</tbody></table>` : '<div class="dnote">Tidak ada.</div>';
+
+  const fl = d.recent_failures || [];
+  document.getElementById('alerts-failures').innerHTML = fl.length ? `<table class="mini-table">
+      <colgroup><col style="width:140px"><col><col style="width:100px"><col style="width:190px"></colgroup>
+      <thead><tr><th>Waktu</th><th>Pengirim → Penerima</th><th>Status</th><th>Kategori</th></tr></thead>
+      <tbody>${fl.map(r => `<tr title="${esc(r.reason)}"><td class="dmuted nowrap">${esc(r.timestamp)}</td>
+        <td class="wrap">${esc(r.sender || '<>')} → ${esc(r.recipient)}<div class="row-reason">${esc(r.reason)}</div></td>
+        <td>${statusBadge(r.status)}</td><td class="wrap">${esc(r.category)}</td></tr>`).join('')}</tbody></table>` : '<div class="dnote">Tidak ada.</div>';
+}
+
+function initViews() {
+  document.querySelectorAll('.nav-btn[data-view]').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
+  document.querySelectorAll('#view-stats .seg-btn').forEach(b => b.addEventListener('click', () => {
+    _statsDays = parseInt(b.dataset.days);
+    document.querySelectorAll('#view-stats .seg-btn').forEach(x => x.classList.toggle('active', x === b));
+    loadStats();
+  }));
+  document.getElementById('alerts-refresh-btn').addEventListener('click', () => loadAlerts());
+  window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'tracker'));
+  let rt;
+  window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => {
+    const v = document.getElementById('main-content').dataset.view;
+    if (v === 'stats') loadStats(); else if (v === 'alerts') loadAlerts(); else renderChart(_lastChart);
+  }, 250); });
+  showView(location.hash.slice(1) || 'tracker');
+  loadAlerts(true);
+  setInterval(() => loadAlerts(document.getElementById('main-content').dataset.view !== 'alerts'), 120000);
+}
+
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   buildColChooser();
@@ -884,6 +1116,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (limitsRefresh) limitsRefresh.addEventListener('click', () => loadLimits(true));
   loadLimits(false);
   initLimitsForm();
+  initViews();
 
   // Search
   let searchTimer;
@@ -939,30 +1172,11 @@ document.addEventListener('DOMContentLoaded', () => {
     e.target.value = '';
   });
 
-  // Load dir
-  document.getElementById('load-dir-btn').addEventListener('click', async () => {
-    const path = prompt('Enter log directory path:\n(e.g. /var/log)', '/var/log');
-    if (!path) return;
-    setLoading(true, 'LOADING LOG DIRECTORY...');
-    try {
-      const res = await fetch('/api/load-dir', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ path }),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      showToast(`Loaded ${data.count.toLocaleString()} records from ${data.path}`);
-      state.page = 1;
-      await load();
-    } catch (err) {
-      showToast(err.message, 'error');
-      setLoading(false);
-    }
-  });
+  // Sync now
+  document.getElementById('sync-now-btn').addEventListener('click', e => syncNow(e.currentTarget));
 
-  // Clear
-  document.getElementById('clear-btn').addEventListener('click', clearData);
+  // Reset filter
+  document.getElementById('reset-filter-btn').addEventListener('click', resetFilters);
 
   // Export
   document.getElementById('export-btn').addEventListener('click', exportCSV);

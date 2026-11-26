@@ -64,6 +64,11 @@ RE_AMAVIS_MESSAGE_ID = re.compile(r"Message-ID:\s*<(?P<message_id>[^>]+)>")
 RE_AMAVIS_VERDICT = re.compile(r"amavis\[\d+\]:\s+\([\w-]+\)\s+(?:Passed|Blocked)\s+(?P<verdict>[A-Z][A-Z-]*)")
 SPAM_VERDICTS = {"SPAM", "SPAMMY"}
 
+# Event keamanan (untuk halaman Alerts)
+RE_SASL_FAIL = re.compile(r"\[(?P<ip>[0-9A-Fa-f.:]+)\]: SASL (?P<mech>[\w-]+) authentication failed(?:.*?sasl_username=(?P<user>[^\s,]+))?")
+RE_CLIENT_IP = re.compile(r"(?:RCPT|CONNECT|connect) from [^\[\s]*\[(?P<ip>[0-9A-Fa-f.:]+)\]")
+RE_INJECTION = re.compile(r"Service status change:\s*\S+\s+(?P<payload>.*?)\s+changed from")
+
 MONTH_MAP = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
     "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
@@ -101,6 +106,14 @@ def _parse_ts(month_str=None, day_str=None, time_str=None, year=None, line=None)
         except Exception:
             pass
     return None
+
+
+_RE_SYSLOG_TS = re.compile(r"^(?P<month>[A-Z][a-z]{2})\s+(?P<day>\d{1,2})\s+(?P<time>\d\d:\d\d:\d\d)")
+
+
+def _ts_groups(line):
+    m = _RE_SYSLOG_TS.match(line)
+    return (m.group("month"), m.group("day"), m.group("time")) if m else (None, None, None)
 
 
 def _extract_domain(email: str) -> str:
@@ -150,6 +163,7 @@ def stream_parse_log(filepath: str, start_offset: int = 0, batch_size: int = 100
             f.seek(start_offset)
         pos = start_offset
 
+    events = meta_sink.setdefault("events", []) if meta_sink is not None else None
     queue_data = defaultdict(_new_queue)
     qids_by_msgid = defaultdict(set)
     subject_by_msgid = {}
@@ -172,6 +186,19 @@ def stream_parse_log(filepath: str, start_offset: int = 0, batch_size: int = 100
             if b"postfix/" not in raw and b"amavis[" not in raw:
                 continue
             line = raw.decode("utf-8", errors="replace")
+
+            if events is not None:
+                if "authentication failed" in line and "SASL" in line:
+                    m = RE_SASL_FAIL.search(line)
+                    if m:
+                        ts = _parse_ts(*_ts_groups(line), line=line)
+                        events.append(("sasl_fail", ts, m.group("ip"), (m.group("user") or "")[:200]))
+                elif "Service status change:" in line and "zmconfigd[" not in line:
+                    pm = RE_INJECTION.search(line)
+                    im = RE_CLIENT_IP.search(line)
+                    ts = _parse_ts(*_ts_groups(line), line=line)
+                    events.append(("log_injection", ts, im.group("ip") if im else "",
+                                   (pm.group("payload") if pm else line[-300:])[:300]))
 
             if "message-id=" in line and "cleanup[" in line:
                 m = RE_MSGID.search(line)

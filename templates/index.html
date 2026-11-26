@@ -61,14 +61,14 @@
   <aside class="sidebar">
     <div class="sidebar-section">
       <div class="sidebar-label">navigation</div>
-      <button class="nav-btn active">
+      <button class="nav-btn active" data-view="tracker" type="button">
         <span class="nav-icon">📡</span> Mail Tracker
       </button>
-      <button class="nav-btn">
+      <button class="nav-btn" data-view="stats" type="button">
         <span class="nav-icon">📊</span> Statistics
       </button>
-      <button class="nav-btn">
-        <span class="nav-icon">🚨</span> Alerts
+      <button class="nav-btn" data-view="alerts" type="button">
+        <span class="nav-icon">🚨</span> Alerts <span class="nav-badge" id="alerts-badge" hidden></span>
       </button>
     </div>
 
@@ -101,7 +101,7 @@
   </aside>
 
   <!-- ── CONTENT ──────────────────────────────────────── -->
-  <main class="content">
+  <main class="content" id="main-content" data-view="tracker">
 
     <!-- ══ OPS CENTER VITALS & ASSET RADAR ══ -->
     <div style="display:grid; grid-template-columns: 280px 1fr; gap:12px; padding:12px 16px; background:#010904; border-bottom:1px solid var(--border);">
@@ -227,7 +227,7 @@
     <!-- CHART -->
     <div class="chart-section">
       <div class="chart-header">
-        <span class="chart-title">▸ TRAFFIC ANALYSIS — LAST 7 DAYS</span>
+        <span class="chart-title">▸ TRAFFIC ANALYSIS — LAST 7 DAYS <span class="chart-total" id="chart-total"></span></span>
         <div class="chart-legend">
           <span><span class="legend-dot" style="background:#00ff41"></span>Delivered</span>
           <span><span class="legend-dot" style="background:#ff2020"></span>Bounced</span>
@@ -269,9 +269,9 @@
       <div class="toolbar-right">
         <!-- Upload -->
         <button class="tb-btn" id="upload-btn">⬆ Upload Log</button>
-        <button class="tb-btn" id="load-dir-btn">📁 Load Dir</button>
+        <button class="tb-btn" id="sync-now-btn" title="Sinkronkan log mail sekarang">⟳ Sync Now</button>
         <button class="tb-btn" id="export-btn">⬇ Export CSV</button>
-        <button class="tb-btn-danger" id="clear-btn">✕ Clear</button>
+        <button class="tb-btn" id="reset-filter-btn" title="Hapus pencarian, filter, dan urutan">✕ Reset Filter</button>
       </div>
     </div>
 
@@ -332,6 +332,62 @@
         <div class="page-controls" id="pag-controls"></div>
       </div>
     </div>
+
+    <!-- ══ VIEW: STATISTICS ═══════════════════════════════ -->
+    <section class="view" id="view-stats" aria-labelledby="stats-title">
+      <div class="view-head">
+        <div>
+          <h2 class="view-title" id="stats-title">◈ STATISTICS</h2>
+          <div class="view-sub" id="stats-sub">Memuat…</div>
+        </div>
+        <div class="seg" role="group" aria-label="Periode">
+          <button type="button" class="seg-btn" data-days="7">7 hari</button>
+          <button type="button" class="seg-btn active" data-days="30">30 hari</button>
+          <button type="button" class="seg-btn" data-days="90">90 hari</button>
+        </div>
+      </div>
+      <div class="kpi-grid" id="stats-kpi"></div>
+      <div class="panel-grid">
+        <div class="panel span-2">
+          <div class="panel-title">Tren harian <span class="panel-legend"><i style="background:#00ff41"></i>Delivered <i style="background:#ffb000"></i>Deferred <i style="background:#ff2020"></i>Bounced</span></div>
+          <canvas class="bar-canvas" id="stats-trend" height="170"></canvas>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Distribusi per jam (pesan)</div>
+          <canvas class="bar-canvas" id="stats-hourly" height="170"></canvas>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Kategori kegagalan pengiriman</div>
+          <div id="stats-failures"></div>
+        </div>
+        <div class="panel"><div class="panel-title">Top pengirim</div><div id="stats-top-senders"></div></div>
+        <div class="panel"><div class="panel-title">Top penerima</div><div id="stats-top-recipients"></div></div>
+        <div class="panel"><div class="panel-title">Domain tujuan eksternal</div><div id="stats-top-rdomains"></div></div>
+        <div class="panel"><div class="panel-title">Domain pengirim</div><div id="stats-top-sdomains"></div></div>
+        <div class="panel span-2"><div class="panel-title">Lampiran</div><div id="stats-attachments"></div></div>
+      </div>
+    </section>
+
+    <!-- ══ VIEW: ALERTS ═══════════════════════════════════ -->
+    <section class="view" id="view-alerts" aria-labelledby="alerts-title">
+      <div class="view-head">
+        <div>
+          <h2 class="view-title" id="alerts-title">◈ ALERTS</h2>
+          <div class="view-sub" id="alerts-sub">Memuat…</div>
+        </div>
+        <button class="tb-btn" type="button" id="alerts-refresh-btn">↻ REFRESH</button>
+      </div>
+      <div class="alert-list" id="alerts-list"></div>
+      <div class="panel-grid">
+        <div class="panel span-2">
+          <div class="panel-title">Event keamanan 14 hari <span class="panel-legend"><i style="background:#ff2020"></i>Injeksi log <i style="background:#ffb000"></i>Gagal login SASL</span></div>
+          <canvas class="bar-canvas" id="alerts-events" height="150"></canvas>
+        </div>
+        <div class="panel span-2"><div class="panel-title">IP paling aktif (7 hari)</div><div id="alerts-ips"></div></div>
+        <div class="panel span-2"><div class="panel-title">Percobaan injeksi terbaru</div><div id="alerts-injections"></div></div>
+        <div class="panel span-2"><div class="panel-title">Kegagalan pengiriman terbaru</div><div id="alerts-failures"></div></div>
+      </div>
+    </section>
 
   </main>
 </div>
