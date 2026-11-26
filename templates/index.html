@@ -378,6 +378,11 @@
         <button class="tb-btn" type="button" id="alerts-refresh-btn">↻ REFRESH</button>
       </div>
       <div class="alert-list" id="alerts-list"></div>
+      <div class="panel fw-panel" id="fw-panel">
+        <div class="panel-title">Firewall &amp; Fail2ban <span class="dmuted" id="fw-checked"></span></div>
+        <div class="fw-cards" id="fw-cards"><div class="dnote">Memuat…</div></div>
+        <div class="fw-audit" id="fw-audit"></div>
+      </div>
       <div class="panel-grid">
         <div class="panel span-2">
           <div class="panel-title">Event keamanan 14 hari <span class="panel-legend"><i style="background:#ff2020"></i>Injeksi log <i style="background:#ffb000"></i>Gagal login SASL</span></div>
@@ -446,6 +451,41 @@
         <button type="button" class="tb-btn" id="lf-cancel">Batal</button>
         <button type="button" class="tb-btn" id="lf-preview-btn">Pratinjau</button>
         <button type="submit" class="tb-btn lf-apply" id="lf-apply" disabled>Terapkan</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ══ MODAL: UFW / FAIL2BAN ════════════════════════════ -->
+<div class="modal-overlay" id="fw-modal" role="dialog" aria-modal="true" aria-labelledby="fw-modal-title">
+  <div class="modal-box limits-modal-box">
+    <div class="modal-header">
+      <span id="fw-modal-title">FIREWALL</span>
+      <button class="modal-close" id="fw-modal-close" type="button" aria-label="Tutup">✕</button>
+    </div>
+    <form id="fw-form" class="limits-form" autocomplete="off" novalidate>
+      <div id="fw-intro" class="lf-warnings"></div>
+      <div class="lf-field" id="fw-duration-field">
+        <span class="lf-label">Matikan selama</span>
+        <div class="seg fw-seg" id="fw-duration" role="radiogroup">
+          <button type="button" class="seg-btn" data-min="5" role="radio">5 menit</button>
+          <button type="button" class="seg-btn active" data-min="15" role="radio">15 menit</button>
+          <button type="button" class="seg-btn" data-min="60" role="radio">60 menit</button>
+        </div>
+        <span class="lf-help">Setelah waktu habis layanan otomatis aktif kembali (timer systemd, tetap jalan walau dashboard mati).</span>
+      </div>
+      <label class="lf-field" id="fw-confirm-field">
+        <span class="lf-label">Ketik <code id="fw-confirm-word"></code> untuk konfirmasi</span>
+        <span class="lf-input"><input type="text" id="fw-confirm" autocomplete="off" spellcheck="false"></span>
+      </label>
+      <label class="lf-field">
+        <span class="lf-label">Konfirmasi password dashboard</span>
+        <span class="lf-input"><input type="password" id="fw-password" autocomplete="current-password" required></span>
+      </label>
+      <div id="fw-status" class="lf-status" role="status" aria-live="polite"></div>
+      <div class="lf-actions">
+        <button type="button" class="tb-btn" id="fw-cancel">Batal</button>
+        <button type="submit" class="tb-btn lf-apply" id="fw-apply">Terapkan</button>
       </div>
     </form>
   </div>

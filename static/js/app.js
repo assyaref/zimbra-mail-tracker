@@ -936,6 +936,154 @@ function initLimitsForm() {
   });
 }
 
+// ── Firewall: UFW / Fail2ban ───────────────────────────────
+const FW_LABEL = { ufw: 'UFW', fail2ban: 'Fail2ban' };
+const FW_RISK = {
+  ufw: 'Saat UFW mati, semua port yang sekarang tertutup terbuka ke internet, termasuk memcached 11211, admin console 7071, LMTP 7025 dan POP3/IMAP 110/143.',
+  fail2ban: 'Saat Fail2ban mati, semua IP yang sedang diblokir dilepas dan brute-force SMTP/SSH tidak lagi diblokir.',
+};
+const fw = { data: null, editable: false, svc: null, action: null, minutes: 15, timer: null };
+
+function fmtCountdown(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+async function loadFirewall() {
+  const box = document.getElementById('fw-cards');
+  if (!box) return;
+  try {
+    const res = await fetch('/api/firewall', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    renderFirewall(d);
+  } catch (e) {
+    box.innerHTML = `<div class="dnote">Status firewall tidak terbaca: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderFirewall(d) {
+  fw.data = d.status; fw.editable = !!d.editable;
+  const st = d.status || {};
+  const card = (svc) => {
+    const s = st[svc] || {};
+    if (!s.available) return `<div class="fw-card"><div class="fw-name">${FW_LABEL[svc]}</div><div class="dnote">Tidak terpasang / tidak terbaca.</div></div>`;
+    const on = !!s.active;
+    let detail = '';
+    if (svc === 'ufw') detail = on ? `${s.rules} aturan · default deny incoming` : 'Semua port terbuka';
+    else detail = on ? (s.jails || []).map(j => `<span class="fw-jail">${esc(j.name)} <b>${j.banned}</b></span>`).join('') || 'Tidak ada jail'
+                     : 'Tidak ada IP yang diblokir';
+    const countdown = !on && s.reenable_at
+      ? `<div class="fw-count" data-at="${s.reenable_at}">Aktif lagi dalam <b>${fmtCountdown(s.reenable_at - Date.now() / 1000)}</b></div>`
+      : (!on ? `<div class="fw-count fw-count-none">Tidak ada jadwal aktif otomatis</div>` : '');
+    const btn = !fw.editable ? '' : on
+      ? `<button class="tb-btn fw-btn fw-btn-off" type="button" data-svc="${svc}" data-action="disable">⏻ DISABLE…</button>`
+      : `<button class="tb-btn fw-btn fw-btn-on" type="button" data-svc="${svc}" data-action="enable">⏻ ENABLE</button>`;
+    return `<div class="fw-card ${on ? 'on' : 'off'}">
+      <div class="fw-row"><div class="fw-name">${FW_LABEL[svc]}</div><span class="fw-state ${on ? 'on' : 'off'}">${on ? 'AKTIF' : 'NONAKTIF'}</span></div>
+      <div class="fw-detail">${svc === 'fail2ban' && on ? '<span class="dmuted">diblokir sekarang:</span> ' : ''}${detail}</div>
+      ${countdown}
+      <div class="fw-actions">${btn}</div>
+    </div>`;
+  };
+  document.getElementById('fw-cards').innerHTML = card('ufw') + card('fail2ban');
+  document.getElementById('fw-checked').textContent = fw.editable ? '' : '· hanya baca (login dashboard tidak aktif)';
+  document.querySelectorAll('#fw-cards .fw-btn').forEach(b => b.addEventListener('click', () => fwOpen(b.dataset.svc, b.dataset.action)));
+  const audit = d.audit || [];
+  document.getElementById('fw-audit').innerHTML = audit.length ? `<div class="fw-audit-title">Riwayat</div>
+    <div class="mini-wrap"><table class="mini-table"><thead><tr><th>Waktu</th><th>Oleh</th><th>Layanan</th><th>Aksi</th><th>Hasil</th></tr></thead><tbody>
+    ${audit.map(a => `<tr><td>${esc(a.ts)}</td><td>${esc(a.username || '')}${a.ip ? ' <span class="dmuted">' + esc(a.ip) + '</span>' : ''}</td>
+      <td>${esc(FW_LABEL[a.service] || a.service)}</td><td>${esc(a.action)}${a.minutes ? ' ' + a.minutes + ' mnt' : ''}</td>
+      <td class="wrap">${a.ok ? '<span class="fw-ok">OK</span>' : '<span class="fw-fail">GAGAL</span> ' + esc((a.log || []).join(' | '))}</td></tr>`).join('')}
+    </tbody></table></div>` : '';
+  clearInterval(fw.timer);
+  if (document.querySelector('#fw-cards .fw-count[data-at]')) {
+    fw.timer = setInterval(() => {
+      let expired = false;
+      document.querySelectorAll('#fw-cards .fw-count[data-at]').forEach(el => {
+        const left = parseInt(el.dataset.at) - Date.now() / 1000;
+        el.querySelector('b').textContent = fmtCountdown(left);
+        if (left < -5) expired = true;
+      });
+      if (expired) { clearInterval(fw.timer); setTimeout(loadFirewall, 3000); }
+    }, 1000);
+  }
+}
+
+function fwOpen(svc, action) {
+  fw.svc = svc; fw.action = action;
+  const off = action === 'disable';
+  const el = id => document.getElementById(id);
+  el('fw-modal-title').textContent = `${off ? '⏻ DISABLE' : '⏻ ENABLE'} ${FW_LABEL[svc].toUpperCase()}`;
+  el('fw-intro').className = off ? 'lf-warnings' : 'lf-intro';
+  el('fw-intro').innerHTML = off
+    ? `<div>⚠ ${esc(FW_RISK[svc])}</div><div>Hanya untuk troubleshooting singkat.</div>`
+    : (svc === 'ufw' ? 'UFW dinyalakan dengan aturan yang tersimpan. Dashboard menolak bila aturan SSH (22) atau port dashboard tidak ada, supaya akses admin tidak terkunci.'
+                     : 'Fail2ban dinyalakan kembali dan jail dimuat ulang.');
+  el('fw-duration-field').hidden = !off;
+  el('fw-confirm-field').hidden = !off;
+  el('fw-confirm-word').textContent = svc;
+  el('fw-confirm').value = ''; el('fw-password').value = '';
+  el('fw-status').textContent = ''; el('fw-status').className = 'lf-status';
+  el('fw-apply').disabled = false;
+  el('fw-apply').textContent = off ? 'Matikan sementara' : 'Aktifkan';
+  el('fw-modal').classList.add('show');
+  setTimeout(() => (off ? el('fw-confirm') : el('fw-password')).focus(), 50);
+}
+
+function fwClose() {
+  document.getElementById('fw-modal').classList.remove('show');
+  document.getElementById('fw-password').value = '';
+}
+
+function fwStatus(msg, cls = '') {
+  const s = document.getElementById('fw-status');
+  s.innerHTML = msg; s.className = 'lf-status' + (cls ? ' ' + cls : '');
+}
+
+function initFirewall() {
+  const modal = document.getElementById('fw-modal');
+  if (!modal) return;
+  const el = id => document.getElementById(id);
+  el('fw-modal-close').addEventListener('click', fwClose);
+  el('fw-cancel').addEventListener('click', fwClose);
+  modal.addEventListener('click', e => { if (e.target === modal) fwClose(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal.classList.contains('show')) fwClose(); });
+  document.querySelectorAll('#fw-duration .seg-btn').forEach(b => b.addEventListener('click', () => {
+    fw.minutes = parseInt(b.dataset.min);
+    document.querySelectorAll('#fw-duration .seg-btn').forEach(x => { x.classList.toggle('active', x === b); x.setAttribute('aria-checked', x === b); });
+  }));
+  el('fw-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const off = fw.action === 'disable';
+    if (off && el('fw-confirm').value.trim() !== fw.svc) { fwStatus(`Ketik <code>${esc(fw.svc)}</code> untuk konfirmasi.`, 'err'); el('fw-confirm').focus(); return; }
+    const pwd = el('fw-password').value;
+    if (!pwd) { fwStatus('Masukkan password dashboard.', 'err'); el('fw-password').focus(); return; }
+    el('fw-apply').disabled = true;
+    fwStatus('<span class="dspinner"></span> Menerapkan…');
+    try {
+      const body = { service: fw.svc, action: fw.action, password: pwd };
+      if (off) { body.minutes = fw.minutes; body.confirm = el('fw-confirm').value.trim(); }
+      const res = await fetch('/api/firewall', {
+        method: 'POST', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-ZMT-Request': 'firewall' },
+        body: JSON.stringify(body),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (d.status) renderFirewall(d);
+      if (!res.ok || !d.ok) throw new Error(d.error || (d.log || []).join(' | ') || `HTTP ${res.status}`);
+      el('fw-password').value = '';
+      fwStatus('✓ ' + esc((d.log || []).join(' · ')), 'ok');
+      showToast(`${FW_LABEL[fw.svc]} ${off ? 'dimatikan ' + fw.minutes + ' menit' : 'diaktifkan'}`, off ? 'warning' : 'success');
+      setTimeout(fwClose, 1800);
+    } catch (err) {
+      fwStatus('✕ ' + esc(err.message), 'err');
+      el('fw-apply').disabled = false;
+    }
+  });
+}
+
 // ── Views: Mail Tracker / Statistics / Alerts ──────────────
 const VIEWS = ['tracker', 'stats', 'alerts'];
 let _statsDays = 30;
@@ -951,7 +1099,7 @@ function showView(v) {
   if (location.hash !== '#' + v) history.replaceState(null, '', v === 'tracker' ? location.pathname : '#' + v);
   document.getElementById('main-content').scrollTop = 0;
   if (v === 'stats') loadStats();
-  if (v === 'alerts') loadAlerts();
+  if (v === 'alerts') { loadAlerts(); loadFirewall(); }
   if (v === 'tracker' && _lastChart.length) requestAnimationFrame(() => renderChart(_lastChart));
 }
 
@@ -1092,7 +1240,8 @@ function initViews() {
     document.querySelectorAll('#view-stats .seg-btn').forEach(x => x.classList.toggle('active', x === b));
     loadStats();
   }));
-  document.getElementById('alerts-refresh-btn').addEventListener('click', () => loadAlerts());
+  document.getElementById('alerts-refresh-btn').addEventListener('click', () => { loadAlerts(); loadFirewall(); });
+  initFirewall();
   window.addEventListener('hashchange', () => showView(location.hash.slice(1) || 'tracker'));
   let rt;
   window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => {

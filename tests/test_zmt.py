@@ -206,5 +206,38 @@ codes = {a["code"] for a in al["alerts"]}
 check("alerts: injection + brute-force raised", {"log_injection", "sasl_bruteforce"} <= codes)
 check("alerts: sorted by severity", al["alerts"][0]["severity"] == "critical")
 check("alerts: stale sync detected", any(a["code"] == "sync_stale" for a in db.compute_alerts(sync_status={"last_sync": "2020-01-01 00:00:00"})["alerts"]))
+# 12) Firewall toggle (no real ufw/fail2ban/systemctl executed)
+import firewall as FW
+RULES = "Added user rules (see 'ufw status' for running firewall):\nufw allow 22/tcp comment 'SSH'\nufw allow 9444/tcp\nufw allow in on wg0 from 10.20.0.0/24 to any port 7071 proto tcp\nufw allow 80\n"
+check("fw: rule guard finds 22, 9444, bare 80", FW.ufw_allows_port(22, RULES) and FW.ufw_allows_port(9444, RULES) and FW.ufw_allows_port(80, RULES))
+check("fw: interface-only rule does not count", not FW.ufw_allows_port(7071, RULES) and not FW.ufw_allows_port(2222, RULES))
+def fw_rej(fn, *a):
+    try: fn(*a); return False
+    except FW.FirewallError: return True
+check("fw: reject unknown service / bad duration", fw_rej(FW.disable, "iptables", 15) and fw_rej(FW.disable, "ufw", 7)
+      and fw_rej(FW.disable, "ufw", 0) and fw_rej(FW.enable, "sshd"))
+calls = []
+_orig = FW._run
+def fake_run(cmd, timeout=30):
+    calls.append(cmd)
+    if cmd[0] == FW.SYSTEMD_RUN and any(c.startswith("--on-active") for c in cmd): return 1, "", "denied"
+    return 0, "", ""
+FW._run = fake_run
+ok_, log_ = FW.disable("ufw", 15)
+check("fw: no safety timer -> service NOT disabled", not ok_ and not any(FW.UFW in c and "disable" in c for c in calls))
+calls.clear()
+FW._run = lambda cmd, timeout=30: (calls.append(cmd) or (0, RULES if cmd[:3] == [FW.UFW, "show", "added"] else "", ""))
+ok_, log_ = FW.disable("fail2ban", 5)
+timer = [c for c in calls if any(x.startswith("--on-active") for x in c)]
+check("fw: disable creates 5-min re-enable timer before stopping",
+      ok_ and timer and "--on-active=300" in timer[0] and timer[0][-3:] == [FW.SYSTEMCTL, "start", "fail2ban"]
+      and calls.index(timer[0]) < next(i for i, c in enumerate(calls) if c[-3:] == [FW.SYSTEMCTL, "stop", "fail2ban"]))
+check("fw: enable refused when SSH rule missing", fw_rej(FW.enable, "ufw", [22, 2222]))
+calls.clear(); ok_, _ = FW.enable("ufw", [22, 9444])
+check("fw: enable runs ufw --force enable and cancels timer", ok_ and any(c[-3:] == [FW.UFW, "--force", "enable"] for c in calls)
+      and any(c[:2] == [FW.SYSTEMCTL, "stop"] and "zmt-reenable-ufw.timer" in c for c in calls))
+FW._run = _orig
+db.add_firewall_audit("tester", "127.0.0.1", "ufw", "disable", 15, True, ["x"])
+check("fw: audit stored and listed", db.list_firewall_audit(3)[0]["minutes"] == 15)
 print(f"\nRESULT: {ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)
