@@ -587,3 +587,31 @@ def get_message_detail(message_id, queue_id=""):
         })
     out["recipients"] = list(seen.values())
     return out
+
+
+def limits_usage(message_limit=None, days=30):
+    """Statistik pemakaian terhadap batas ukuran (tanpa hop internal)."""
+    conn = get_db()
+    since = conn.execute("SELECT datetime('now','localtime', ?)", (f"-{int(days)} days",)).fetchone()[0]
+    out = {"days": days}
+    r = conn.execute("""
+        SELECT mm.message_id, mm.att_total, mm.att_count, MAX(e.subject) AS subject, MAX(e.timestamp) AS ts
+        FROM message_meta mm JOIN emails e ON e.message_id = mm.message_id
+        WHERE e.timestamp >= ? AND mm.att_total IS NOT NULL
+        GROUP BY mm.message_id ORDER BY mm.att_total DESC LIMIT 1
+    """, (since,)).fetchone()
+    out["largest_attachments"] = dict(r) if r else None
+    out["messages_with_attachments"] = conn.execute("""
+        SELECT COUNT(DISTINCT mm.message_id) FROM message_meta mm JOIN emails e ON e.message_id = mm.message_id
+        WHERE e.timestamp >= ? AND mm.att_count > 0""", (since,)).fetchone()[0]
+    out["largest_message_size"] = conn.execute(
+        f"SELECT MAX(size) FROM emails WHERE timestamp >= ? AND NOT {INTERNAL_HOP_SQL}", (since,)).fetchone()[0]
+    out["near_limit_messages"] = conn.execute(
+        f"SELECT COUNT(DISTINCT message_id) FROM emails WHERE timestamp >= ? AND size >= ? AND NOT {INTERNAL_HOP_SQL}",
+        (since, int(message_limit * 0.8))).fetchone()[0] if message_limit else None
+    out["size_rejections"] = conn.execute("""
+        SELECT COUNT(*) FROM emails WHERE timestamp >= ? AND status IN ('bounced','deferred') AND (
+            reason LIKE '%5.3.4%' OR reason LIKE '%exceeds size limit%' OR reason LIKE '%message size%'
+            OR reason LIKE '%too large%' OR reason LIKE '%file too big%')""", (since,)).fetchone()[0]
+    conn.close()
+    return out

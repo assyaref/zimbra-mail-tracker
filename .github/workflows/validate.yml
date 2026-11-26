@@ -23,6 +23,6 @@ jobs:
       - name: Check dashboard JavaScript
         run: node --check static/js/app.js
       - name: Compile tools
-        run: python -m py_compile store_meta.py tools/*.py
+        run: python -m py_compile store_meta.py mail_limits.py tools/*.py
       - name: Parser / DB unit tests
         run: python tests/test_zmt.py .

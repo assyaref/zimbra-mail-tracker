@@ -24,6 +24,7 @@ import config
 from parser import parse_log_content, stream_parse_log
 import db
 import store_meta
+import mail_limits
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _TLS_ENABLED = False
@@ -288,12 +289,40 @@ def _background_store_scan():
             traceback.print_exc()
         time.sleep(max(60, STORE_SCAN_INTERVAL))
 
+# ── Batas ukuran pesan/lampiran Zimbra (read-only, cache) ─────────────────────
+_limits_cache = {"data": None, "ts": 0.0}
+_limits_lock = threading.Lock()
+LIMITS_TTL = 1800
+
+def _refresh_limits(force=False):
+    with _limits_lock:
+        if not force and _limits_cache["data"] and time.time() - _limits_cache["ts"] < LIMITS_TTL:
+            return _limits_cache["data"]
+        if force and _limits_cache["data"] and time.time() - _limits_cache["ts"] < 60:
+            return _limits_cache["data"]   # batasi refresh manual: maks 1x per menit
+        try:
+            data = mail_limits.read_limits()
+        except Exception as e:
+            data = {"errors": [str(e)], "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        _limits_cache.update(data=data, ts=time.time())
+        return data
+
+def _background_limits():
+    time.sleep(5)
+    while True:
+        try:
+            _refresh_limits(force=False)
+        except Exception as e:
+            print(f"[ERR] limits refresh: {e}")
+        time.sleep(LIMITS_TTL)
+
 # Start Worker Thread (dapat dimatikan untuk tool offline/pengujian)
 if os.getenv("ZMT_NO_SYNC", "") != "1":
     sync_thread = threading.Thread(target=_background_log_sync, daemon=True)
     sync_thread.start()
     if _runtime_cfg.get("store_scan", True):
         threading.Thread(target=_background_store_scan, daemon=True).start()
+    threading.Thread(target=_background_limits, daemon=True).start()
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
@@ -483,6 +512,16 @@ class TrackerHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self._send_json(vitals)
+            return
+
+        # Batas ukuran pesan & lampiran (read-only)
+        if path == "/api/limits":
+            data = _refresh_limits(force=qget("refresh") == "1") or {}
+            try:
+                usage = db.limits_usage(data.get("effective_message_limit"))
+            except Exception as e:
+                usage = {"error": str(e)}
+            self._send_json({"limits": data, "usage": usage})
             return
 
         # Message detail: header To/Cc, lampiran, semua penerima envelope

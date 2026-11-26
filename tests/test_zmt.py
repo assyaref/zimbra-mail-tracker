@@ -144,5 +144,17 @@ db.fill_subjects_from_meta()
 check("detail: empty subject filled from store header", c.execute("select subject from emails where queue_id='QD1' and recipient='eve@ex.com'").fetchone()[0] == "Detail test" and not filled_before)
 d2 = db.get_message_detail("UNKNOWNQ", "UNKNOWNQ")
 check("detail: no headers -> headers_available False", d2["headers_available"] is False and d2["recipients"] == [])
+
+# 9) mail_limits parsing + usage stats
+import mail_limits
+attrs = mail_limits._parse_attrs("prov> \n# name x\nzimbraMtaMaxMessageSize: 26214400\nzimbraMtaBlockedExtension: exe\nzimbraMtaBlockedExtension: bat\nzimbraAttachmentsBlocked: FALSE\n")
+check("limits: attrs parsed (multi-value)", attrs.get("zimbraMtaMaxMessageSize") == ["26214400"] and attrs.get("zimbraMtaBlockedExtension") == ["exe", "bat"])
+eff = int((26214400 - 16*1024) / mail_limits.BASE64_OVERHEAD)
+check("limits: effective attachment ~18.3MB for 25MB", 19_000_000 < eff < 19_200_000)
+c.execute("update emails set timestamp=datetime('now','localtime') where queue_id='QD1'"); c.commit()
+c.execute("update emails set size=24000000 where queue_id='QD1' and recipient='bob@ex.com'"); c.commit()
+u = db.limits_usage(26214400)
+check("limits: usage largest attachment found", u["largest_attachments"] and u["largest_attachments"]["att_total"] == len(payload))
+check("limits: near-limit message counted", u["near_limit_messages"] == 1)
 print(f"\nRESULT: {ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

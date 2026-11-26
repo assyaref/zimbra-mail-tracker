@@ -539,7 +539,7 @@ function openDetail(row) {
       <div class="dgrid">
         ${dField('Recipient (baris ini)', dText(row.to))}
         ${dField('Relay', `<span class="mono-wrap">${dText(row.relay)}</span>`)}
-        ${dField('Ukuran pesan', sizeTxt)}
+        ${dField('Ukuran pesan', sizeTxt + (_zmtLimits && row.size ? `<div class="dlimit-inline">${limitBar(row.size, _zmtLimits.effective_message_limit)}</div>` : ''))}
       </div>
       ${row.reason ? `<div class="dlabel" style="margin-top:10px">Reason / error</div><div class="reason-box">${esc(row.reason)}</div>` : ''}`);
 
@@ -596,6 +596,7 @@ async function loadDetailExtra(row) {
   } else {
     attHtml = `
       <div class="dsummary"><b>${d.att_count}</b> file · total <b>${fmtBytes(d.att_total)}</b></div>
+      ${_zmtLimits && _zmtLimits.effective_attachment_limit ? `<div class="dlimit"><span class="dlabel">Terhadap batas lampiran efektif</span>${limitBar(d.att_total, _zmtLimits.effective_attachment_limit)}</div>` : ''}
       <div class="mini-wrap"><table class="mini-table">
         <colgroup><col><col style="width:30%"><col style="width:92px"></colgroup>
         <thead><tr><th>Nama file</th><th>Tipe</th><th class="num">Ukuran</th></tr></thead>
@@ -666,6 +667,82 @@ async function loadDoctorReport() {
   }
 }
 
+// ── Batas ukuran pesan & lampiran ──────────────────────────
+let _zmtLimits = null;
+
+function limitBar(used, limit) {
+  if (!used || !limit) return '';
+  const pct = Math.min(100, (used / limit) * 100);
+  const cls = pct >= 90 ? 'lb-red' : pct >= 70 ? 'lb-amber' : 'lb-green';
+  return `<div class="limit-bar ${cls}" title="${pct.toFixed(1)}% dari batas">
+    <div class="limit-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+    <div class="limit-bar-caption">${fmtBytes(used)} dari ${fmtBytes(limit)} · ${pct.toFixed(0)}%</div>`;
+}
+
+async function loadLimits(force) {
+  const summary = document.getElementById('limits-summary');
+  const cards = document.getElementById('limits-cards');
+  const usageBox = document.getElementById('limits-usage');
+  if (!summary || !cards) return;
+  if (force) summary.textContent = 'Memperbarui dari Zimbra…';
+  let d;
+  try {
+    const res = await fetch('/api/limits' + (force ? '?refresh=1' : ''), { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) {
+    summary.textContent = 'Gagal memuat batas: ' + e.message;
+    return;
+  }
+  const L = d.limits || {}, U = d.usage || {};
+  _zmtLimits = L;
+  const errs = (L.errors || []).length;
+  summary.innerHTML = `Sumber: Postfix <code>message_size_limit</code> &amp; <code>zmprov</code> · diperbarui ${esc(L.fetched_at || '—')}` +
+    ` · <span class="limits-ro">READ-ONLY</span>` + (errs ? ` · <span style="color:var(--red)">${errs} error: ${esc(L.errors.join('; '))}</span>` : '') +
+    (L.consistent === false ? ` · <span style="color:var(--amber)">zimbraMtaMaxMessageSize ≠ Postfix (belum diterapkan?)</span>` : '');
+
+  const card = (title, value, sub, tone = '') => `
+    <div class="limit-card ${tone}">
+      <div class="limit-card-title">${title}</div>
+      <div class="limit-card-value">${value}</div>
+      <div class="limit-card-sub">${sub}</div>
+    </div>`;
+  const perFile = L.file_upload_max_size_per_file;
+  const exts = L.blocked_extensions || [];
+  cards.innerHTML =
+    card('Maks ukuran pesan (MTA)', fmtBytes(L.effective_message_limit),
+         'Total email termasuk lampiran · <code>zimbraMtaMaxMessageSize</code>', 'tone-primary') +
+    card('Maks lampiran efektif', '≈ ' + fmtBytes(L.effective_attachment_limit),
+         'Setelah encoding base64 (+~37%) dari batas MTA') +
+    card('Maks upload web client', fmtBytes(L.file_upload_max_size),
+         'Batas lampiran saat kirim via webmail · <code>zimbraFileUploadMaxSize</code>', 'tone-warn') +
+    card('Maks per file (COS default)', perFile ? fmtBytes(perFile) : 'Tidak dibatasi terpisah',
+         '<code>zimbraFileUploadMaxSizePerFile</code>' + (perFile ? '' : ' = 0')) +
+    card('Maks konten tersimpan', fmtBytes(L.mail_content_max_size), '<code>zimbraMailContentMaxSize</code>') +
+    card('Blokir lampiran', L.attachments_blocked ? 'Semua diblokir' : (exts.length ? `${exts.length} ekstensi` : 'Tidak ada'),
+         exts.length ? esc(exts.slice(0, 12).join(', ')) + (exts.length > 12 ? '…' : '') : '<code>zimbraMtaBlockedExtension</code> kosong',
+         L.attachments_blocked ? 'tone-warn' : '');
+
+  if (usageBox) {
+    const big = U.largest_attachments;
+    usageBox.innerHTML = `
+      <div class="limits-usage-title">PEMAKAIAN ${U.days || 30} HARI TERAKHIR</div>
+      <div class="limits-usage-grid">
+        <div class="lu-item"><div class="lu-label">Lampiran terbesar (per pesan)</div>
+          ${big ? limitBar(big.att_total, L.effective_attachment_limit) +
+            `<div class="lu-note" title="${esc(big.subject || '')}">${big.att_count} file · ${esc(big.subject || '(tanpa subject)')}</div>` : '<div class="dmuted">—</div>'}</div>
+        <div class="lu-item"><div class="lu-label">Pesan terbesar</div>
+          ${U.largest_message_size ? limitBar(U.largest_message_size, L.effective_message_limit) : '<div class="dmuted">—</div>'}</div>
+        <div class="lu-item lu-stats">
+          <div><b>${(U.messages_with_attachments ?? 0).toLocaleString()}</b><span>pesan berlampiran</span></div>
+          <div><b class="${U.near_limit_messages ? 'amber' : ''}">${U.near_limit_messages ?? '—'}</b><span>pesan ≥ 80% batas</span></div>
+          <div><b class="${U.size_rejections ? 'red' : ''}">${U.size_rejections ?? 0}</b><span>ditolak karena ukuran</span></div>
+        </div>
+      </div>
+      <div class="limits-footnote">Ubah batas lewat Admin Console atau <code>zmprov mcf zimbraMtaMaxMessageSize …</code> / <code>zimbraFileUploadMaxSize …</code> (perlu restart MTA/mailbox). Panel ini hanya menampilkan.</div>`;
+  }
+}
+
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   buildColChooser();
@@ -673,6 +750,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const doctorRefresh = document.getElementById('doctor-refresh-btn');
   if (doctorRefresh) doctorRefresh.addEventListener('click', loadDoctorReport);
   loadDoctorReport();
+
+  const limitsRefresh = document.getElementById('limits-refresh-btn');
+  if (limitsRefresh) limitsRefresh.addEventListener('click', () => loadLimits(true));
+  loadLimits(false);
 
   // Search
   let searchTimer;
