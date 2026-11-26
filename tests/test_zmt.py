@@ -109,5 +109,74 @@ rows_pct, t_pct, _ = db.query_emails(q="%")
 check("query: '%' search is literal", t_pct == 0)
 p1,_,_ = db.query_emails(per_page=1, page=1); p2,_,_ = db.query_emails(per_page=1, page=2)
 check("query: pagination distinct pages", p1 and p2 and p1[0]["id"] != p2[0]["id"])
+
+# 8) store_meta: To/Cc/attachments from a synthetic blob; message detail kinds
+import store_meta, base64 as _b64, json as _json
+blobdir = os.path.join(tmpd, "store", "0", "1", "msg", "0"); os.makedirs(blobdir)
+payload = os.urandom(12345)
+eml = ("Message-ID: <det1@ex.com>\r\nFrom: Alice <alice@ex.com>\r\nTo: Bob <bob@ex.com>, carol@other.org\r\n"
+       "Cc: =?UTF-8?B?RMOpbmlz?= <dave@other.org>\r\nSubject: Detail test\r\nMIME-Version: 1.0\r\n"
+       "Content-Type: multipart/mixed; boundary=XX\r\n\r\n--XX\r\nContent-Type: text/plain\r\n\r\nhello\r\n"
+       "--XX\r\nContent-Type: application/pdf; name=\"laporan.pdf\"\r\nContent-Transfer-Encoding: base64\r\n"
+       "Content-Disposition: attachment; filename=\"laporan.pdf\"\r\n\r\n"
+       + "\r\n".join(_b64.b64encode(payload).decode()[i:i+76] for i in range(0, 16500, 76)) + "\r\n--XX--\r\n")
+open(os.path.join(blobdir, "257-1.msg"), "wb").write(eml.encode())
+meta, st = store_meta.scan(0, store=os.path.join(tmpd, "store"))
+m = meta.get("det1@ex.com", {})
+check("store: To parsed", m.get("to") == ["Bob <bob@ex.com>", "carol@other.org"])
+check("store: Cc RFC2047 name decoded", m.get("cc") == ["Dénis <dave@other.org>"])
+check("store: attachment name/type", m.get("attachments") and m["attachments"][0]["name"] == "laporan.pdf" and m["attachments"][0]["type"] == "application/pdf")
+check("store: base64 attachment size exact", m.get("attachments") and m["attachments"][0]["size"] == len(payload))
+check("store: body text part not counted", len(m.get("attachments") or []) == 1)
+db.upsert_message_meta(meta)
+db.insert_records([
+  {"message_id":"det1@ex.com","queue_id":"QD1","to":"bob@ex.com","status":"delivered","from":"alice@ex.com","relay":"mail[1.1.1.1]:7025"},
+  {"message_id":"det1@ex.com","queue_id":"QD1","to":"dave@other.org","status":"sent","from":"alice@ex.com","relay":"mx[2.2.2.2]:25"},
+  {"message_id":"det1@ex.com","queue_id":"QD1","to":"eve@ex.com","status":"delivered","from":"alice@ex.com","relay":"mail[1.1.1.1]:7025"},
+  {"message_id":"det1@ex.com","queue_id":"QD0","to":"bob@ex.com","status":"sent","from":"alice@ex.com","relay":"127.0.0.1[127.0.0.1]:10032"}])
+d = db.get_message_detail("det1@ex.com", "QD1")
+kinds = {r["recipient"]: r["kind"] for r in d["recipients"]}
+check("detail: To/CC/BCC kinds", kinds == {"bob@ex.com": "to", "dave@other.org": "cc", "eve@ex.com": "bcc"})
+check("detail: internal hop excluded", len(d["recipients"]) == 3)
+check("detail: attachment totals", d["att_count"] == 1 and d["att_total"] == len(payload))
+filled_before = c.execute("select subject from emails where queue_id='QD1' and recipient='eve@ex.com'").fetchone()[0]
+db.fill_subjects_from_meta()
+check("detail: empty subject filled from store header", c.execute("select subject from emails where queue_id='QD1' and recipient='eve@ex.com'").fetchone()[0] == "Detail test" and not filled_before)
+d2 = db.get_message_detail("UNKNOWNQ", "UNKNOWNQ")
+check("detail: no headers -> headers_available False", d2["headers_available"] is False and d2["recipients"] == [])
+
+# 9) mail_limits parsing + usage stats
+import mail_limits
+attrs = mail_limits._parse_attrs("prov> \n# name x\nzimbraMtaMaxMessageSize: 26214400\nzimbraMtaBlockedExtension: exe\nzimbraMtaBlockedExtension: bat\nzimbraAttachmentsBlocked: FALSE\n")
+check("limits: attrs parsed (multi-value)", attrs.get("zimbraMtaMaxMessageSize") == ["26214400"] and attrs.get("zimbraMtaBlockedExtension") == ["exe", "bat"])
+eff = int((26214400 - 16*1024) / mail_limits.BASE64_OVERHEAD)
+check("limits: effective attachment ~18.3MB for 25MB", 19_000_000 < eff < 19_200_000)
+c.execute("update emails set timestamp=datetime('now','localtime') where queue_id='QD1'"); c.commit()
+c.execute("update emails set size=24000000 where queue_id='QD1' and recipient='bob@ex.com'"); c.commit()
+u = db.limits_usage(26214400)
+check("limits: usage largest attachment found", u["largest_attachments"] and u["largest_attachments"]["att_total"] == len(payload))
+check("limits: near-limit message counted", u["near_limit_messages"] == 1)
+
+# 10) limit changes: validation + command building (no zmprov executed)
+cur = {"zimbra_mta_max_message_size": 25*1048576, "mail_content_max_size": 25*1048576,
+       "file_upload_max_size": 10*1048576, "file_upload_max_size_per_file": 0}
+def rej(req):
+    try: mail_limits.validate(req, cur); return False
+    except mail_limits.LimitError: return True
+check("limits-edit: reject 0 / >100 / decimal / text / empty / bool", all(rej(r) for r in
+      [{"message_mb": 0}, {"message_mb": 101}, {"upload_mb": 2.5}, {"upload_mb": "x; rm -rf /"}, {}, {"message_mb": True}]))
+check("limits-edit: reject per-file > upload", rej({"per_file_mb": 20, "upload_mb": 10}))
+t, w = mail_limits.validate({"message_mb": 30, "upload_mb": 20}, cur); cmds, ch = mail_limits.build_commands(t, cur)
+check("limits-edit: raise message also raises content limit", cmds == ["mcf zimbraMtaMaxMessageSize 31457280", "mcf zimbraMailContentMaxSize 31457280", "mcf zimbraFileUploadMaxSize 20971520"])
+t, w = mail_limits.validate({"message_mb": 20}, cur); cmds, _ = mail_limits.build_commands(t, cur)
+check("limits-edit: lowering message keeps content limit", cmds == ["mcf zimbraMtaMaxMessageSize 20971520"])
+t, w = mail_limits.validate({"message_mb": 25, "upload_mb": 10, "per_file_mb": 0}, cur)
+check("limits-edit: identical values -> no commands", mail_limits.build_commands(t, cur)[0] == [])
+t, w = mail_limits.validate({"upload_mb": 25}, cur)
+check("limits-edit: warning when upload exceeds effective attachment", any("melebihi" in x for x in w))
+t, w = mail_limits.validate({"per_file_mb": 5}, cur); cmds, _ = mail_limits.build_commands(t, cur)
+check("limits-edit: per-file goes to COS default", cmds == ["mc default zimbraFileUploadMaxSizePerFile 5242880"])
+db.add_limits_audit("tester", "127.0.0.1", True, [{"attr": "x", "old": 1, "new": 2}], [], ["ok"])
+check("limits-edit: audit stored and listed", db.list_limits_audit(5)[0]["changes"][0]["new"] == 2)
 print(f"\nRESULT: {ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

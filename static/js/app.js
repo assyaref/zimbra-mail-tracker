@@ -488,61 +488,150 @@ function exportCSV() {
 }
 
 // ── Detail Modal ───────────────────────────────────────────
+function fmtBytes(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  if (n < 1024) return n + ' B';
+  const u = ['KB', 'MB', 'GB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v < 10 ? 2 : 1) + ' ' + u[i];
+}
+
+// "'Nama' <a@b>" -> {name, addr}; tanda kutip literal di nama dibuang
+function splitAddr(s) {
+  const m = String(s || '').match(/^(.*?)\s*<([^>]+)>\s*$/);
+  let name = m ? m[1] : '', addr = m ? m[2] : String(s || '');
+  name = name.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+  if (name.toLowerCase() === addr.toLowerCase()) name = '';
+  return { name, addr: addr.trim() };
+}
+
+const dField = (label, valueHtml, cls = '') =>
+  `<div class="dfield ${cls}"><div class="dlabel">${label}</div><div class="dvalue">${valueHtml}</div></div>`;
+const dText = (v) => (v === null || v === undefined || v === '') ? '<span class="dmuted">—</span>' : esc(v);
+const dSection = (title, inner, extra = '') =>
+  `<section class="dsection ${extra}"><h4 class="dsection-title">${title}</h4>${inner}</section>`;
+
 function openDetail(row) {
   const modal = document.getElementById('detail-modal');
   const body  = document.getElementById('modal-body');
+  const sizeTxt = row.size ? `${fmtBytes(row.size)} <span class="dmuted">(${row.size.toLocaleString()} bytes)</span>` : dText('');
 
-  const field = (label, value, style = '') =>
-    `<div class="detail-field">
-       <div class="detail-label">${label}</div>
-       <div class="detail-value ${style}">${esc(value || '—')}</div>
-     </div>`;
+  body.innerHTML =
+    dSection('Identitas pesan', `
+      <div class="dgrid">
+        ${dField('Message ID', `<span class="mono-wrap">${dText(row.message_id)}</span>`, 'span-2')}
+        ${dField('Queue ID', dText(row.queue_id))}
+        ${dField('Timestamp', dText(row.timestamp))}
+        ${dField('Status', statusBadge(row.status))}
+        ${dField('Main class', mainClassBadge(row.main_class))}
+      </div>`) +
+    dSection('Pengirim', `
+      <div class="dgrid">
+        ${dField('Sender', dText(row.from))}
+        ${dField('Auth username', dText(row.auth_username))}
+        ${dField('Auth domain', dText(row.auth_domain))}
+        ${dField('Identity', dText(row.identity))}
+      </div>`) +
+    dSection('Subject', `<div class="dvalue dsubject">${row.subject ? esc(row.subject) : '<span class="dmuted">— Subject tidak tercatat —</span>'}</div>`) +
+    `<div id="detail-extra"><div class="dloading"><span class="dspinner"></span>Memuat To / CC / lampiran…</div></div>` +
+    dSection('Teknis', `
+      <div class="dgrid">
+        ${dField('Recipient (baris ini)', dText(row.to))}
+        ${dField('Relay', `<span class="mono-wrap">${dText(row.relay)}</span>`)}
+        ${dField('Ukuran pesan', sizeTxt + (_zmtLimits && row.size ? `<div class="dlimit-inline">${limitBar(row.size, _zmtLimits.effective_message_limit)}</div>` : ''))}
+      </div>
+      ${row.reason ? `<div class="dlabel" style="margin-top:10px">Reason / error</div><div class="reason-box">${esc(row.reason)}</div>` : ''}`);
 
-  body.innerHTML = `
-    <div class="detail-grid">
-      ${field('Message ID', row.message_id)}
-      ${field('Queue ID', row.queue_id)}
-      ${field('Timestamp', row.timestamp)}
-      ${field('Status', '')}
-    </div>`;
+  body.scrollTop = 0;
+  modal.classList.add('show');
+  loadDetailExtra(row);
+}
 
-  // Replace status field with badge
-  const detailFields = body.querySelectorAll('.detail-value');
-  detailFields[3].innerHTML = statusBadge(row.status);
+let _detailSeq = 0;
+async function loadDetailExtra(row) {
+  const seq = ++_detailSeq;
+  const params = new URLSearchParams();
+  if (row.message_id) params.set('message_id', row.message_id);
+  if (row.queue_id) params.set('queue_id', row.queue_id);
+  let d;
+  try {
+    const res = await fetch(`/api/message?${params}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) {
+    if (seq !== _detailSeq) return;
+    const box = document.getElementById('detail-extra');
+    if (box) box.innerHTML = `<div class="dloading">Gagal memuat detail tambahan: ${esc(e.message)}</div>`;
+    return;
+  }
+  if (seq !== _detailSeq) return;   // modal sudah berganti ke pesan lain
+  const box = document.getElementById('detail-extra');
+  if (!box) return;
 
-  body.innerHTML += `
-    <div class="detail-grid" style="margin-top:12px">
-      ${field('Auth Domain', row.auth_domain)}
-      ${field('Auth Username', row.auth_username)}
-      ${field('Identity', row.identity)}
-      ${field('Main Class', '')}
-    </div>`;
+  const chips = (list) => {
+    if (!list || !list.length) return '<span class="dmuted">—</span>';
+    return `<div class="chips">${list.map(a => {
+      const p = splitAddr(a);
+      return `<span class="chip" title="${esc(a)}">${p.name ? `<span class="chip-name">${esc(p.name)}</span>` : ''}<span class="chip-addr">${esc(p.addr)}</span></span>`;
+    }).join('')}</div>`;
+  };
 
-  const detailFields2 = body.querySelectorAll('.detail-value');
-  detailFields2[7].innerHTML = mainClassBadge(row.main_class);
-
-  body.innerHTML += `
-    <div class="detail-grid" style="margin-top:12px">
-      ${field('Sender', row.from)}
-      ${field('Recipient', row.to)}
-    </div>
-    <div style="margin-top:12px">
-      ${field('Subject', row.subject)}
-    </div>
-    <div style="margin-top:12px">
-      ${field('Relay', row.relay)}
-      ${field('Size', row.size ? row.size.toLocaleString() + ' bytes' : '—')}
-    </div>`;
-
-  if (row.reason) {
-    body.innerHTML += `
-      <div style="margin-top:12px">
-        <div class="detail-label">REASON / ERROR</div>
-        <div class="reason-box">${esc(row.reason)}</div>
-      </div>`;
+  // Penerima (header)
+  let recipientsHtml;
+  if (d.headers_available) {
+    recipientsHtml = `
+      <div class="drow"><div class="drow-label">To <span class="count">${d.to.length}</span></div>${chips(d.to)}</div>
+      <div class="drow"><div class="drow-label">CC <span class="count">${d.cc.length}</span></div>${chips(d.cc)}</div>`;
+  } else {
+    recipientsHtml = `<div class="dnote">Header tidak tersedia (pesan tidak tersimpan di mailbox lokal). Penerima aktual ada di bagian Pengiriman.</div>`;
   }
 
-  modal.classList.add('show');
+  // Lampiran
+  let attHtml;
+  if (d.attachments === null || d.attachments === undefined) {
+    attHtml = `<div class="dnote">${d.headers_available ? 'Tidak diketahui (blob terlalu besar untuk dianalisis).' : 'Tidak diketahui.'}</div>`;
+  } else if (!d.attachments.length) {
+    attHtml = `<div class="dnote">Tidak ada lampiran.</div>`;
+  } else {
+    attHtml = `
+      <div class="dsummary"><b>${d.att_count}</b> file · total <b>${fmtBytes(d.att_total)}</b></div>
+      ${_zmtLimits && _zmtLimits.effective_attachment_limit ? `<div class="dlimit"><span class="dlabel">Terhadap batas lampiran efektif</span>${limitBar(d.att_total, _zmtLimits.effective_attachment_limit)}</div>` : ''}
+      <div class="mini-wrap"><table class="mini-table">
+        <colgroup><col><col style="width:30%"><col style="width:92px"></colgroup>
+        <thead><tr><th>Nama file</th><th>Tipe</th><th class="num">Ukuran</th></tr></thead>
+        <tbody>${d.attachments.map(a => `
+          <tr><td class="wrap">${esc(a.name)}${a.inline ? ' <span class="kind-badge kind-inline">INLINE</span>' : ''}</td>
+              <td class="wrap dmuted">${esc(a.type)}</td>
+              <td class="num">${fmtBytes(a.size)}</td></tr>`).join('')}
+        </tbody></table></div>`;
+  }
+
+  // Pengiriman (envelope)
+  const kindBadge = (k) => k === 'to' ? '<span class="kind-badge kind-to">TO</span>'
+    : k === 'cc' ? '<span class="kind-badge kind-cc">CC</span>'
+    : k === 'bcc' ? '<span class="kind-badge kind-bcc" title="Tidak tercantum di header To/Cc: BCC, alias, atau anggota distribution list">BCC/ALIAS</span>'
+    : '<span class="dmuted">—</span>';
+  const rec = d.recipients || [];
+  const cnt = (s) => rec.filter(r => r.status === s).length;
+  const statusSummary = ['delivered', 'sent', 'deferred', 'bounced'].filter(s => cnt(s))
+    .map(s => `${statusBadge(s)} <b>${cnt(s)}</b>`).join('<span class="sep"></span>');
+  const deliveryHtml = rec.length ? `
+      <div class="dsummary">${rec.length} penerima${statusSummary ? '<span class="sep"></span>' + statusSummary : ''}</div>
+      <div class="mini-wrap"><table class="mini-table">
+        <colgroup><col><col style="width:86px"><col style="width:104px"><col style="width:146px"></colgroup>
+        <thead><tr><th>Penerima</th><th>Jenis</th><th>Status</th><th>Waktu</th></tr></thead>
+        <tbody>${rec.map(r => `<tr>
+          <td class="wrap">${esc(r.recipient)}${r.reason ? `<div class="row-reason">${esc(r.reason)}</div>` : ''}</td>
+          <td>${kindBadge(r.kind)}</td><td>${statusBadge(r.status)}</td>
+          <td class="dmuted nowrap">${esc(r.timestamp)}</td></tr>`).join('')}
+        </tbody></table></div>`
+    : `<div class="dnote">Tidak ada data pengiriman.</div>`;
+
+  box.innerHTML =
+    dSection('Penerima (header)', recipientsHtml) +
+    dSection(`Lampiran`, attHtml) +
+    dSection('Pengiriman (envelope)', deliveryHtml);
 }
 
 // ── ZMT Doctor ─────────────────────────────────────────────
@@ -578,6 +667,211 @@ async function loadDoctorReport() {
   }
 }
 
+// ── Batas ukuran pesan & lampiran ──────────────────────────
+let _zmtLimits = null;
+
+function limitBar(used, limit) {
+  if (!used || !limit) return '';
+  const pct = Math.min(100, (used / limit) * 100);
+  const cls = pct >= 90 ? 'lb-red' : pct >= 70 ? 'lb-amber' : 'lb-green';
+  return `<div class="limit-bar ${cls}" title="${pct.toFixed(1)}% dari batas">
+    <div class="limit-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+    <div class="limit-bar-caption">${fmtBytes(used)} dari ${fmtBytes(limit)} · ${pct.toFixed(0)}%</div>`;
+}
+
+async function loadLimits(force) {
+  const summary = document.getElementById('limits-summary');
+  const cards = document.getElementById('limits-cards');
+  const usageBox = document.getElementById('limits-usage');
+  if (!summary || !cards) return;
+  if (force) summary.textContent = 'Memperbarui dari Zimbra…';
+  let d;
+  try {
+    const res = await fetch('/api/limits' + (force ? '?refresh=1' : ''), { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) {
+    summary.textContent = 'Gagal memuat batas: ' + e.message;
+    return;
+  }
+  const L = d.limits || {}, U = d.usage || {};
+  _zmtLimits = L;
+  const editBtn = document.getElementById('limits-edit-btn');
+  if (editBtn) editBtn.hidden = !d.editable;
+  renderLimitsAudit(d.audit || []);
+  const errs = (L.errors || []).length;
+  summary.innerHTML = `Sumber: Postfix <code>message_size_limit</code> &amp; <code>zmprov</code> · diperbarui ${esc(L.fetched_at || '—')}` +
+    ` · <span class="limits-ro">${d.editable ? 'DAPAT DIUBAH · AUDIT' : 'READ-ONLY'}</span>` + (errs ? ` · <span style="color:var(--red)">${errs} error: ${esc(L.errors.join('; '))}</span>` : '') +
+    (L.consistent === false ? ` · <span style="color:var(--amber)">zimbraMtaMaxMessageSize ≠ Postfix (belum diterapkan?)</span>` : '');
+
+  const card = (title, value, sub, tone = '') => `
+    <div class="limit-card ${tone}">
+      <div class="limit-card-title">${title}</div>
+      <div class="limit-card-value">${value}</div>
+      <div class="limit-card-sub">${sub}</div>
+    </div>`;
+  const perFile = L.file_upload_max_size_per_file;
+  const exts = L.blocked_extensions || [];
+  cards.innerHTML =
+    card('Maks ukuran pesan (MTA)', fmtBytes(L.effective_message_limit),
+         'Total email termasuk lampiran · <code>zimbraMtaMaxMessageSize</code>', 'tone-primary') +
+    card('Maks lampiran efektif', '≈ ' + fmtBytes(L.effective_attachment_limit),
+         'Setelah encoding base64 (+~37%) dari batas MTA') +
+    card('Maks upload web client', fmtBytes(L.file_upload_max_size),
+         'Batas lampiran saat kirim via webmail · <code>zimbraFileUploadMaxSize</code>', 'tone-warn') +
+    card('Maks per file (COS default)', perFile ? fmtBytes(perFile) : 'Tidak dibatasi terpisah',
+         '<code>zimbraFileUploadMaxSizePerFile</code>' + (perFile ? '' : ' = 0')) +
+    card('Maks konten tersimpan', fmtBytes(L.mail_content_max_size), '<code>zimbraMailContentMaxSize</code>') +
+    card('Blokir lampiran', L.attachments_blocked ? 'Semua diblokir' : (exts.length ? `${exts.length} ekstensi` : 'Tidak ada'),
+         exts.length ? esc(exts.slice(0, 12).join(', ')) + (exts.length > 12 ? '…' : '') : '<code>zimbraMtaBlockedExtension</code> kosong',
+         L.attachments_blocked ? 'tone-warn' : '');
+
+  if (usageBox) {
+    const big = U.largest_attachments;
+    usageBox.innerHTML = `
+      <div class="limits-usage-title">PEMAKAIAN ${U.days || 30} HARI TERAKHIR</div>
+      <div class="limits-usage-grid">
+        <div class="lu-item"><div class="lu-label">Lampiran terbesar (per pesan)</div>
+          ${big ? limitBar(big.att_total, L.effective_attachment_limit) +
+            `<div class="lu-note" title="${esc(big.subject || '')}">${big.att_count} file · ${esc(big.subject || '(tanpa subject)')}</div>` : '<div class="dmuted">—</div>'}</div>
+        <div class="lu-item"><div class="lu-label">Pesan terbesar</div>
+          ${U.largest_message_size ? limitBar(U.largest_message_size, L.effective_message_limit) : '<div class="dmuted">—</div>'}</div>
+        <div class="lu-item lu-stats">
+          <div><b>${(U.messages_with_attachments ?? 0).toLocaleString()}</b><span>pesan berlampiran</span></div>
+          <div><b class="${U.near_limit_messages ? 'amber' : ''}">${U.near_limit_messages ?? '—'}</b><span>pesan ≥ 80% batas</span></div>
+          <div><b class="${U.size_rejections ? 'red' : ''}">${U.size_rejections ?? 0}</b><span>ditolak karena ukuran</span></div>
+        </div>
+      </div>
+      <div class="limits-footnote">${d.editable ? 'Gunakan <b>✎ UBAH BATAS</b> untuk mengubah nilai (wajib password, tercatat di riwayat). Postfix diperbarui otomatis oleh zmconfigd ±1 menit.' : 'Perubahan dari dashboard nonaktif. Ubah lewat Admin Console atau <code>zmprov mcf …</code>.'}</div>`;
+  }
+}
+
+function renderLimitsAudit(rows) {
+  const box = document.getElementById('limits-audit');
+  if (!box) return;
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const name = (a) => ({ zimbraMtaMaxMessageSize: 'Pesan (MTA)', zimbraMailContentMaxSize: 'Konten tersimpan',
+    zimbraFileUploadMaxSize: 'Upload webmail', zimbraFileUploadMaxSizePerFile: 'Per file (COS)' }[a] || a);
+  box.innerHTML = `<div class="limits-usage-title">RIWAYAT PERUBAHAN</div>
+    <div class="audit-list">${rows.map(r => `
+      <div class="audit-row ${r.ok ? '' : 'audit-fail'}">
+        <span class="audit-ts">${esc(r.ts)}</span>
+        <span class="audit-who">${esc(r.username || '?')} · ${esc(r.ip || '')}</span>
+        <span class="audit-what">${(r.changes || []).map(c => `${esc(name(c.attr))}: ${fmtBytes(c.old)} → <b>${fmtBytes(c.new)}</b>`).join(' · ') || '—'}</span>
+        <span class="audit-res">${r.ok ? 'OK' : 'GAGAL'}</span>
+      </div>`).join('')}</div>`;
+}
+
+// ── Form ubah batas ────────────────────────────────────────
+const lf = {
+  el: (id) => document.getElementById(id),
+  previewOk: false,
+  values() {
+    const n = (id) => { const v = lf.el(id).value.trim(); return v === '' ? null : Number(v); };
+    return { message_mb: n('lf-message'), upload_mb: n('lf-upload'), per_file_mb: n('lf-perfile') };
+  },
+  status(msg, tone = '') { const s = lf.el('lf-status'); s.className = 'lf-status ' + tone; s.innerHTML = msg; },
+  invalidate() {
+    lf.previewOk = false; lf.el('lf-apply').disabled = true; lf.el('lf-preview').hidden = true;
+    const v = lf.values();
+    const eff = v.message_mb ? Math.max(0, v.message_mb * 1048576 - 16384) / ((4 / 3) * (78 / 76)) : 0;
+    lf.el('lf-derived').innerHTML = v.message_mb ? `→ lampiran efektif ≈ <b>${fmtBytes(Math.floor(eff))}</b> (setelah base64)` : '';
+    const w = [];
+    if (v.upload_mb && eff && v.upload_mb * 1048576 > eff) w.push(`Upload webmail ${v.upload_mb} MB melebihi lampiran efektif ≈${fmtBytes(Math.floor(eff))}; lampiran sebesar itu akan ditolak MTA.`);
+    if (v.per_file_mb && v.upload_mb && v.per_file_mb > v.upload_mb) w.push('Maks per file tidak boleh melebihi maks upload.');
+    const wb = lf.el('lf-warnings'); wb.hidden = !w.length; wb.innerHTML = w.map(x => `<div>⚠ ${esc(x)}</div>`).join('');
+    lf.status('');
+  },
+  open() {
+    const L = _zmtLimits || {};
+    const mb = (b) => b === null || b === undefined ? '' : Math.round(b / 1048576);
+    lf.el('lf-message').value = mb(L.zimbra_mta_max_message_size);
+    lf.el('lf-upload').value = mb(L.file_upload_max_size);
+    lf.el('lf-perfile').value = mb(L.file_upload_max_size_per_file || 0);
+    lf.el('lf-message-cur').textContent = 'sekarang ' + fmtBytes(L.zimbra_mta_max_message_size);
+    lf.el('lf-upload-cur').textContent = 'sekarang ' + fmtBytes(L.file_upload_max_size);
+    lf.el('lf-perfile-cur').textContent = 'sekarang ' + (L.file_upload_max_size_per_file ? fmtBytes(L.file_upload_max_size_per_file) : '0 (tidak dibatasi)');
+    lf.el('lf-password').value = '';
+    lf.invalidate();
+    lf.el('limits-modal').classList.add('show');
+    setTimeout(() => lf.el('lf-message').focus(), 50);
+  },
+  close() { lf.el('limits-modal').classList.remove('show'); lf.el('lf-password').value = ''; },
+  async send(dryRun) {
+    const pwd = lf.el('lf-password').value;
+    if (!pwd) { lf.status('Masukkan password dashboard untuk konfirmasi.', 'err'); lf.el('lf-password').focus(); return null; }
+    const btns = ['lf-preview-btn', 'lf-apply', 'lf-cancel'].map(lf.el);
+    btns.forEach(b => b.disabled = true);
+    lf.status(dryRun ? 'Memeriksa…' : '<span class="dspinner"></span> Menerapkan ke Zimbra…');
+    try {
+      const res = await fetch('/api/limits', {
+        method: 'POST', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-ZMT-Request': 'limits' },
+        body: JSON.stringify({ ...lf.values(), password: pwd, dry_run: dryRun }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok && !d.changes) throw new Error(d.error || `HTTP ${res.status}`);
+      return d;
+    } catch (e) {
+      lf.status('✕ ' + esc(e.message), 'err');
+      return null;
+    } finally {
+      lf.el('lf-preview-btn').disabled = false; lf.el('lf-cancel').disabled = false;
+      lf.el('lf-apply').disabled = !lf.previewOk;
+    }
+  },
+  renderChanges(d) {
+    const box = lf.el('lf-preview');
+    const ch = d.changes || [];
+    box.hidden = false;
+    box.innerHTML = ch.length
+      ? `<div class="lf-preview-title">Akan diubah:</div>` + ch.map(c =>
+          `<div class="lf-change"><code>${esc(c.attr)}</code> <span class="dmuted">(${esc(c.scope)})</span><span>${fmtBytes(c.old)} → <b>${fmtBytes(c.new)}</b></span></div>`).join('')
+      : `<div class="dmuted">Tidak ada perubahan: nilai sama dengan konfigurasi sekarang.</div>`;
+    if ((d.warnings || []).length) {
+      const wb = lf.el('lf-warnings'); wb.hidden = false;
+      wb.innerHTML = d.warnings.map(x => `<div>⚠ ${esc(x)}</div>`).join('');
+    }
+    return ch.length;
+  },
+};
+
+function initLimitsForm() {
+  const modal = lf.el('limits-modal');
+  if (!modal) return;
+  lf.el('limits-edit-btn').addEventListener('click', lf.open);
+  lf.el('limits-modal-close').addEventListener('click', lf.close);
+  lf.el('lf-cancel').addEventListener('click', lf.close);
+  modal.addEventListener('click', e => { if (e.target === modal) lf.close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && modal.classList.contains('show')) lf.close(); });
+  ['lf-message', 'lf-upload', 'lf-perfile'].forEach(id => lf.el(id).addEventListener('input', lf.invalidate));
+  lf.el('lf-preview-btn').addEventListener('click', async () => {
+    const d = await lf.send(true);
+    if (!d) return;
+    const n = lf.renderChanges(d);
+    lf.previewOk = n > 0;
+    lf.el('lf-apply').disabled = !lf.previewOk;
+    lf.status(n ? 'Periksa perubahan di atas, lalu klik <b>Terapkan</b>.' : 'Tidak ada yang perlu diterapkan.', n ? 'ok' : '');
+  });
+  lf.el('limits-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!lf.previewOk) { lf.status('Klik Pratinjau terlebih dahulu.', 'err'); return; }
+    const d = await lf.send(false);
+    if (!d) return;
+    lf.previewOk = false; lf.el('lf-apply').disabled = true;
+    if (d.ok) {
+      lf.el('lf-password').value = '';
+      lf.status('✓ Diterapkan. ' + esc((d.log || []).slice(-1)[0] || ''), 'ok');
+      showToast('Batas ukuran diperbarui');
+      loadLimits(false);
+      setTimeout(lf.close, 2500);
+    } else {
+      lf.status('✕ Gagal menerapkan: ' + esc((d.log || []).join(' | ') || d.error || ''), 'err');
+      loadLimits(false);
+    }
+  });
+}
+
 // ── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   buildColChooser();
@@ -585,6 +879,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const doctorRefresh = document.getElementById('doctor-refresh-btn');
   if (doctorRefresh) doctorRefresh.addEventListener('click', loadDoctorReport);
   loadDoctorReport();
+
+  const limitsRefresh = document.getElementById('limits-refresh-btn');
+  if (limitsRefresh) limitsRefresh.addEventListener('click', () => loadLimits(true));
+  loadLimits(false);
+  initLimitsForm();
 
   // Search
   let searchTimer;
