@@ -23,6 +23,7 @@ from urllib.parse import urlparse, parse_qs
 import config
 from parser import parse_log_content, stream_parse_log
 import db
+import store_meta
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _TLS_ENABLED = False
@@ -258,10 +259,41 @@ def _background_log_sync():
         interval = int(_runtime_cfg.get("auto_load_interval", 30))
         time.sleep(max(10, interval))
 
+# ── Background Worker: Zimbra store metadata (To/Cc/lampiran) ────────────────
+_store_status = {"last_scan": "Never", "files": 0, "messages": 0, "subjects_filled": 0, "last_error": ""}
+STORE_SCAN_INTERVAL = int(_runtime_cfg.get("store_scan_interval", 600))
+
+def _background_store_scan():
+    """Baca header/MIME blob baru (read-only) secara berkala dengan prioritas rendah."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)
+    except Exception:
+        pass
+    time.sleep(20)
+    while True:
+        try:
+            store = _runtime_cfg.get("zimbra_store", store_meta.STORE)
+            if os.path.isdir(store):
+                since = float(db.kv_get("store_scan_since", time.time() - 2 * 86400))
+                meta, st = store_meta.scan(since - 600, store=store)
+                db.upsert_message_meta(meta)
+                filled = db.fill_subjects_from_meta()
+                db.kv_set("store_scan_since", st["newest_mtime"])
+                _store_status.update(last_scan=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                     files=st["files"], messages=len(meta), subjects_filled=filled,
+                                     last_error="" if not st["errors"] else f"{st['errors']} blob error(s)")
+        except Exception as e:
+            _store_status["last_error"] = str(e)
+            print(f"[ERR] store scan: {e}")
+            traceback.print_exc()
+        time.sleep(max(60, STORE_SCAN_INTERVAL))
+
 # Start Worker Thread (dapat dimatikan untuk tool offline/pengujian)
 if os.getenv("ZMT_NO_SYNC", "") != "1":
     sync_thread = threading.Thread(target=_background_log_sync, daemon=True)
     sync_thread.start()
+    if _runtime_cfg.get("store_scan", True):
+        threading.Thread(target=_background_store_scan, daemon=True).start()
 
 
 class TrackerHandler(BaseHTTPRequestHandler):
@@ -408,7 +440,7 @@ class TrackerHandler(BaseHTTPRequestHandler):
         if path == "/api/session":
             version_file = os.path.join(BASE_DIR, "VERSION")
             ver = open(version_file).read().strip() if os.path.isfile(version_file) else config.APP_VERSION
-            self._send_json({"status": "online", "version": ver, "sync": _sync_status})
+            self._send_json({"status": "online", "version": ver, "sync": _sync_status, "store_scan": _store_status})
             return
 
         # Latest VPS diagnostic report (dashboard session required).
@@ -451,6 +483,16 @@ class TrackerHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self._send_json(vitals)
+            return
+
+        # Message detail: header To/Cc, lampiran, semua penerima envelope
+        if path == "/api/message":
+            mid = qget("message_id").strip()[:998]
+            qid = qget("queue_id").strip()[:64]
+            if not mid and not qid:
+                self._send_json({"error": "message_id or queue_id required"}, 400)
+                return
+            self._send_json(db.get_message_detail(mid, qid))
             return
 
         # Logs query from SQLite

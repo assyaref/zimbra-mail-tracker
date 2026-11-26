@@ -5,6 +5,7 @@ Database produksi tunggal: /etc/zimbra-mail-tracker/tracker.db (override: ZMT_DB
 """
 
 import os
+import json
 import sqlite3
 import logging
 
@@ -93,6 +94,25 @@ def init_db():
         );
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_qmeta_msgid ON queue_meta(message_id);")
+        # Metadata dari header/MIME blob Zimbra (To, Cc, lampiran). Isi lampiran tidak disimpan.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS message_meta (
+            message_id TEXT PRIMARY KEY,
+            hdr_to TEXT DEFAULT '[]',
+            hdr_cc TEXT DEFAULT '[]',
+            attachments TEXT,
+            att_count INTEGER,
+            att_total INTEGER,
+            store_subject TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS kv (
+            k TEXT PRIMARY KEY,
+            v TEXT
+        );
+        """)
         # Subject per Message-ID dari baris amavis (sumber log terverifikasi).
         conn.execute("""
         CREATE TABLE IF NOT EXISTS message_subjects (
@@ -452,3 +472,118 @@ def backfill_subjects(subject_map: dict):
                 WHERE message_id = ? AND message_id <> queue_id AND COALESCE(subject, '') = ''
             """, (subject, key))
     conn.close()
+
+
+# ── Message metadata dari blob Zimbra (To/Cc/lampiran) ───────────────────────
+
+def kv_get(key, default=None):
+    conn = get_db()
+    row = conn.execute("SELECT v FROM kv WHERE k = ?", (key,)).fetchone()
+    conn.close()
+    return row["v"] if row else default
+
+
+def kv_set(key, value):
+    conn = get_db()
+    with conn:
+        conn.execute("INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                     (key, str(value)))
+    conn.close()
+
+
+def upsert_message_meta(meta):
+    """meta: {message_id: {to, cc, attachments, subject}} dari store_meta.scan().
+    Nilai yang sudah ada hanya diganti bila kosong. Return jumlah baris diproses."""
+    if not meta:
+        return 0
+    conn = get_db()
+    n = 0
+    with conn:
+        for mid, m in meta.items():
+            atts = m.get("attachments")
+            conn.execute("""
+                INSERT INTO message_meta (message_id, hdr_to, hdr_cc, attachments, att_count, att_total, store_subject)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    hdr_to = CASE WHEN message_meta.hdr_to IN ('', '[]') THEN excluded.hdr_to ELSE message_meta.hdr_to END,
+                    hdr_cc = CASE WHEN message_meta.hdr_cc IN ('', '[]') THEN excluded.hdr_cc ELSE message_meta.hdr_cc END,
+                    attachments = COALESCE(message_meta.attachments, excluded.attachments),
+                    att_count = COALESCE(message_meta.att_count, excluded.att_count),
+                    att_total = COALESCE(message_meta.att_total, excluded.att_total),
+                    store_subject = COALESCE(message_meta.store_subject, excluded.store_subject),
+                    updated_at = CURRENT_TIMESTAMP
+            """, (mid, json.dumps(m.get("to") or [], ensure_ascii=False), json.dumps(m.get("cc") or [], ensure_ascii=False),
+                  json.dumps(atts, ensure_ascii=False) if atts is not None else None,
+                  len(atts) if atts is not None else None,
+                  sum(a.get("size", 0) for a in atts) if atts is not None else None,
+                  m.get("subject")))
+            n += 1
+    conn.close()
+    return n
+
+
+def fill_subjects_from_meta():
+    """Isi Subject KOSONG dari header blob (Message-ID exact, salinan konsisten). Dicatat di recovery log."""
+    conn = get_db()
+    filled = 0
+    with conn:
+        has_log = conn.execute("SELECT 1 FROM sqlite_master WHERE name='subject_recovery_log'").fetchone()
+        rows = conn.execute("""
+            SELECT e.id, e.message_id, mm.store_subject FROM emails e JOIN message_meta mm ON mm.message_id = e.message_id
+            WHERE COALESCE(TRIM(e.subject),'') = '' AND e.message_id <> e.queue_id
+              AND COALESCE(TRIM(mm.store_subject),'') <> ''
+        """).fetchall()
+        for r in rows:
+            c = conn.execute("UPDATE emails SET subject = ? WHERE id = ? AND COALESCE(TRIM(subject),'') = ''",
+                             (r["store_subject"], r["id"]))
+            if c.rowcount == 1:
+                filled += 1
+                if has_log:
+                    conn.execute("""INSERT INTO subject_recovery_log
+                        (email_id, message_id, old_subject, new_subject, source, correlation_method, confidence)
+                        VALUES (?, ?, '', ?, 'zimbra_store_header', 'message_id_exact', 1.0)""",
+                                 (r["id"], r["message_id"], r["store_subject"]))
+    conn.close()
+    return filled
+
+
+def _addr_only(s):
+    s = (s or "").strip()
+    if "<" in s and s.endswith(">"):
+        s = s[s.rfind("<") + 1:-1]
+    return s.strip().lower()
+
+
+def get_message_detail(message_id, queue_id=""):
+    """Detail satu pesan: header To/Cc, lampiran, dan semua penerima envelope (tanpa hop internal)."""
+    conn = get_db()
+    key_is_msgid = bool(message_id) and message_id != queue_id
+    out = {"message_id": message_id, "headers_available": False, "to": [], "cc": [],
+           "attachments": None, "att_count": None, "att_total": None, "recipients": []}
+    if key_is_msgid:
+        mm = conn.execute("SELECT * FROM message_meta WHERE message_id = ?", (message_id,)).fetchone()
+        if mm:
+            out.update(headers_available=True, to=json.loads(mm["hdr_to"] or "[]"), cc=json.loads(mm["hdr_cc"] or "[]"),
+                       attachments=json.loads(mm["attachments"]) if mm["attachments"] else
+                       ([] if mm["att_count"] == 0 else None),
+                       att_count=mm["att_count"], att_total=mm["att_total"])
+        rows = conn.execute(f"""SELECT recipient, status, relay, timestamp, reason, queue_id FROM emails
+                                WHERE message_id = ? AND NOT {INTERNAL_HOP_SQL} ORDER BY recipient, timestamp""",
+                            (message_id,)).fetchall()
+    else:
+        rows = conn.execute(f"""SELECT recipient, status, relay, timestamp, reason, queue_id FROM emails
+                                WHERE queue_id = ? AND NOT {INTERNAL_HOP_SQL} ORDER BY recipient""",
+                            (queue_id,)).fetchall()
+    conn.close()
+    to_set = {_addr_only(a) for a in out["to"]}
+    cc_set = {_addr_only(a) for a in out["cc"]}
+    seen = {}
+    for r in rows:
+        addr = (r["recipient"] or "").lower()
+        kind = "to" if addr in to_set else "cc" if addr in cc_set else ("bcc" if out["headers_available"] else "")
+        seen.setdefault((addr, r["status"]), {
+            "recipient": r["recipient"], "status": r["status"], "relay": r["relay"],
+            "timestamp": r["timestamp"], "reason": r["reason"], "kind": kind,
+        })
+    out["recipients"] = list(seen.values())
+    return out

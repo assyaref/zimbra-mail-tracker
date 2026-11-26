@@ -531,7 +531,7 @@ function openDetail(row) {
     </div>
     <div style="margin-top:12px">
       ${field('Relay', row.relay)}
-      ${field('Size', row.size ? row.size.toLocaleString() + ' bytes' : '—')}
+      ${field('Size (pesan)', row.size ? fmtBytes(row.size) + ' (' + row.size.toLocaleString() + ' bytes)' : '—')}
     </div>`;
 
   if (row.reason) {
@@ -542,7 +542,95 @@ function openDetail(row) {
       </div>`;
   }
 
+  body.innerHTML += `<div id="detail-extra" class="detail-extra"><div class="detail-loading">Memuat To / CC / lampiran…</div></div>`;
   modal.classList.add('show');
+  loadDetailExtra(row);
+}
+
+function fmtBytes(n) {
+  if (n === null || n === undefined) return '—';
+  if (n < 1024) return n + ' B';
+  const u = ['KB', 'MB', 'GB'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v < 10 ? 2 : 1) + ' ' + u[i];
+}
+
+let _detailSeq = 0;
+async function loadDetailExtra(row) {
+  const seq = ++_detailSeq;
+  const params = new URLSearchParams();
+  if (row.message_id) params.set('message_id', row.message_id);
+  if (row.queue_id) params.set('queue_id', row.queue_id);
+  let d;
+  try {
+    const res = await fetch(`/api/message?${params}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    d = await res.json();
+  } catch (e) {
+    if (seq !== _detailSeq) return;
+    const box = document.getElementById('detail-extra');
+    if (box) box.innerHTML = `<div class="detail-loading">Gagal memuat detail tambahan: ${esc(e.message)}</div>`;
+    return;
+  }
+  if (seq !== _detailSeq) return;   // modal sudah berganti ke pesan lain
+  const box = document.getElementById('detail-extra');
+  if (!box) return;
+
+  const chips = (list) => list && list.length
+    ? list.map(a => `<span class="addr-chip">${esc(a)}</span>`).join('')
+    : '<span class="detail-muted">—</span>';
+
+  let html = '';
+  if (d.headers_available) {
+    html += `
+      <div class="detail-section">
+        <div class="detail-label">TO (${d.to.length})</div>
+        <div class="detail-value addr-list">${chips(d.to)}</div>
+      </div>
+      <div class="detail-section">
+        <div class="detail-label">CC (${d.cc.length})</div>
+        <div class="detail-value addr-list">${chips(d.cc)}</div>
+      </div>`;
+  } else {
+    html += `<div class="detail-section"><div class="detail-label">TO / CC</div>
+      <div class="detail-value detail-muted">Header tidak tersedia (pesan tidak tersimpan di mailbox lokal). Lihat daftar penerima envelope di bawah.</div></div>`;
+  }
+
+  // Lampiran
+  let att;
+  if (d.attachments === null || d.attachments === undefined) {
+    att = `<span class="detail-muted">${d.headers_available ? 'Tidak diketahui (blob terlalu besar untuk dianalisis)' : 'Tidak diketahui'}</span>`;
+  } else if (!d.attachments.length) {
+    att = '<span class="detail-muted">Tidak ada lampiran</span>';
+  } else {
+    att = `<table class="mini-table">
+      <thead><tr><th>Nama file</th><th>Tipe</th><th class="num">Ukuran</th></tr></thead>
+      <tbody>${d.attachments.map(a => `
+        <tr><td>${esc(a.name)}${a.inline ? ' <span class="kind-badge kind-inline">INLINE</span>' : ''}</td>
+            <td class="detail-muted">${esc(a.type)}</td>
+            <td class="num">${fmtBytes(a.size)}</td></tr>`).join('')}
+      </tbody></table>`;
+  }
+  const attTitle = d.att_count ? `LAMPIRAN (${d.att_count} file · total ${fmtBytes(d.att_total)})` : 'LAMPIRAN';
+  html += `<div class="detail-section"><div class="detail-label">${attTitle}</div><div class="detail-value">${att}</div></div>`;
+
+  // Semua penerima envelope
+  const kindBadge = (k) => k === 'to' ? '<span class="kind-badge kind-to">TO</span>'
+    : k === 'cc' ? '<span class="kind-badge kind-cc">CC</span>'
+    : k === 'bcc' ? '<span class="kind-badge kind-bcc" title="Tidak tercantum di header To/Cc: BCC, alias, atau anggota distribution list">BCC/ALIAS</span>'
+    : '';
+  const rec = d.recipients || [];
+  html += `<div class="detail-section">
+    <div class="detail-label">SEMUA PENERIMA (ENVELOPE) · ${rec.length}</div>
+    <div class="detail-value">${rec.length ? `<table class="mini-table">
+      <thead><tr><th>Penerima</th><th>Jenis</th><th>Status</th><th>Waktu</th></tr></thead>
+      <tbody>${rec.map(r => `<tr><td>${esc(r.recipient)}</td><td>${kindBadge(r.kind)}</td>
+        <td>${statusBadge(r.status)}</td><td class="detail-muted">${esc(r.timestamp)}</td></tr>`).join('')}
+      </tbody></table>` : '<span class="detail-muted">—</span>'}</div>
+  </div>`;
+
+  box.innerHTML = html;
 }
 
 // ── ZMT Doctor ─────────────────────────────────────────────
