@@ -488,72 +488,64 @@ function exportCSV() {
 }
 
 // ── Detail Modal ───────────────────────────────────────────
-function openDetail(row) {
-  const modal = document.getElementById('detail-modal');
-  const body  = document.getElementById('modal-body');
-
-  const field = (label, value, style = '') =>
-    `<div class="detail-field">
-       <div class="detail-label">${label}</div>
-       <div class="detail-value ${style}">${esc(value || '—')}</div>
-     </div>`;
-
-  body.innerHTML = `
-    <div class="detail-grid">
-      ${field('Message ID', row.message_id)}
-      ${field('Queue ID', row.queue_id)}
-      ${field('Timestamp', row.timestamp)}
-      ${field('Status', '')}
-    </div>`;
-
-  // Replace status field with badge
-  const detailFields = body.querySelectorAll('.detail-value');
-  detailFields[3].innerHTML = statusBadge(row.status);
-
-  body.innerHTML += `
-    <div class="detail-grid" style="margin-top:12px">
-      ${field('Auth Domain', row.auth_domain)}
-      ${field('Auth Username', row.auth_username)}
-      ${field('Identity', row.identity)}
-      ${field('Main Class', '')}
-    </div>`;
-
-  const detailFields2 = body.querySelectorAll('.detail-value');
-  detailFields2[7].innerHTML = mainClassBadge(row.main_class);
-
-  body.innerHTML += `
-    <div class="detail-grid" style="margin-top:12px">
-      ${field('Sender', row.from)}
-      ${field('Recipient', row.to)}
-    </div>
-    <div style="margin-top:12px">
-      ${field('Subject', row.subject)}
-    </div>
-    <div style="margin-top:12px">
-      ${field('Relay', row.relay)}
-      ${field('Size (pesan)', row.size ? fmtBytes(row.size) + ' (' + row.size.toLocaleString() + ' bytes)' : '—')}
-    </div>`;
-
-  if (row.reason) {
-    body.innerHTML += `
-      <div style="margin-top:12px">
-        <div class="detail-label">REASON / ERROR</div>
-        <div class="reason-box">${esc(row.reason)}</div>
-      </div>`;
-  }
-
-  body.innerHTML += `<div id="detail-extra" class="detail-extra"><div class="detail-loading">Memuat To / CC / lampiran…</div></div>`;
-  modal.classList.add('show');
-  loadDetailExtra(row);
-}
-
 function fmtBytes(n) {
-  if (n === null || n === undefined) return '—';
+  if (n === null || n === undefined || isNaN(n)) return '—';
   if (n < 1024) return n + ' B';
   const u = ['KB', 'MB', 'GB'];
   let v = n / 1024, i = 0;
   while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
   return v.toFixed(v < 10 ? 2 : 1) + ' ' + u[i];
+}
+
+// "'Nama' <a@b>" -> {name, addr}; tanda kutip literal di nama dibuang
+function splitAddr(s) {
+  const m = String(s || '').match(/^(.*?)\s*<([^>]+)>\s*$/);
+  let name = m ? m[1] : '', addr = m ? m[2] : String(s || '');
+  name = name.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+  if (name.toLowerCase() === addr.toLowerCase()) name = '';
+  return { name, addr: addr.trim() };
+}
+
+const dField = (label, valueHtml, cls = '') =>
+  `<div class="dfield ${cls}"><div class="dlabel">${label}</div><div class="dvalue">${valueHtml}</div></div>`;
+const dText = (v) => (v === null || v === undefined || v === '') ? '<span class="dmuted">—</span>' : esc(v);
+const dSection = (title, inner, extra = '') =>
+  `<section class="dsection ${extra}"><h4 class="dsection-title">${title}</h4>${inner}</section>`;
+
+function openDetail(row) {
+  const modal = document.getElementById('detail-modal');
+  const body  = document.getElementById('modal-body');
+  const sizeTxt = row.size ? `${fmtBytes(row.size)} <span class="dmuted">(${row.size.toLocaleString()} bytes)</span>` : dText('');
+
+  body.innerHTML =
+    dSection('Identitas pesan', `
+      <div class="dgrid">
+        ${dField('Message ID', `<span class="mono-wrap">${dText(row.message_id)}</span>`, 'span-2')}
+        ${dField('Queue ID', dText(row.queue_id))}
+        ${dField('Timestamp', dText(row.timestamp))}
+        ${dField('Status', statusBadge(row.status))}
+        ${dField('Main class', mainClassBadge(row.main_class))}
+      </div>`) +
+    dSection('Pengirim', `
+      <div class="dgrid">
+        ${dField('Sender', dText(row.from))}
+        ${dField('Auth username', dText(row.auth_username))}
+        ${dField('Auth domain', dText(row.auth_domain))}
+        ${dField('Identity', dText(row.identity))}
+      </div>`) +
+    dSection('Subject', `<div class="dvalue dsubject">${row.subject ? esc(row.subject) : '<span class="dmuted">— Subject tidak tercatat —</span>'}</div>`) +
+    `<div id="detail-extra"><div class="dloading"><span class="dspinner"></span>Memuat To / CC / lampiran…</div></div>` +
+    dSection('Teknis', `
+      <div class="dgrid">
+        ${dField('Recipient (baris ini)', dText(row.to))}
+        ${dField('Relay', `<span class="mono-wrap">${dText(row.relay)}</span>`)}
+        ${dField('Ukuran pesan', sizeTxt)}
+      </div>
+      ${row.reason ? `<div class="dlabel" style="margin-top:10px">Reason / error</div><div class="reason-box">${esc(row.reason)}</div>` : ''}`);
+
+  body.scrollTop = 0;
+  modal.classList.add('show');
+  loadDetailExtra(row);
 }
 
 let _detailSeq = 0;
@@ -570,67 +562,75 @@ async function loadDetailExtra(row) {
   } catch (e) {
     if (seq !== _detailSeq) return;
     const box = document.getElementById('detail-extra');
-    if (box) box.innerHTML = `<div class="detail-loading">Gagal memuat detail tambahan: ${esc(e.message)}</div>`;
+    if (box) box.innerHTML = `<div class="dloading">Gagal memuat detail tambahan: ${esc(e.message)}</div>`;
     return;
   }
   if (seq !== _detailSeq) return;   // modal sudah berganti ke pesan lain
   const box = document.getElementById('detail-extra');
   if (!box) return;
 
-  const chips = (list) => list && list.length
-    ? list.map(a => `<span class="addr-chip">${esc(a)}</span>`).join('')
-    : '<span class="detail-muted">—</span>';
+  const chips = (list) => {
+    if (!list || !list.length) return '<span class="dmuted">—</span>';
+    return `<div class="chips">${list.map(a => {
+      const p = splitAddr(a);
+      return `<span class="chip" title="${esc(a)}">${p.name ? `<span class="chip-name">${esc(p.name)}</span>` : ''}<span class="chip-addr">${esc(p.addr)}</span></span>`;
+    }).join('')}</div>`;
+  };
 
-  let html = '';
+  // Penerima (header)
+  let recipientsHtml;
   if (d.headers_available) {
-    html += `
-      <div class="detail-section">
-        <div class="detail-label">TO (${d.to.length})</div>
-        <div class="detail-value addr-list">${chips(d.to)}</div>
-      </div>
-      <div class="detail-section">
-        <div class="detail-label">CC (${d.cc.length})</div>
-        <div class="detail-value addr-list">${chips(d.cc)}</div>
-      </div>`;
+    recipientsHtml = `
+      <div class="drow"><div class="drow-label">To <span class="count">${d.to.length}</span></div>${chips(d.to)}</div>
+      <div class="drow"><div class="drow-label">CC <span class="count">${d.cc.length}</span></div>${chips(d.cc)}</div>`;
   } else {
-    html += `<div class="detail-section"><div class="detail-label">TO / CC</div>
-      <div class="detail-value detail-muted">Header tidak tersedia (pesan tidak tersimpan di mailbox lokal). Lihat daftar penerima envelope di bawah.</div></div>`;
+    recipientsHtml = `<div class="dnote">Header tidak tersedia (pesan tidak tersimpan di mailbox lokal). Penerima aktual ada di bagian Pengiriman.</div>`;
   }
 
   // Lampiran
-  let att;
+  let attHtml;
   if (d.attachments === null || d.attachments === undefined) {
-    att = `<span class="detail-muted">${d.headers_available ? 'Tidak diketahui (blob terlalu besar untuk dianalisis)' : 'Tidak diketahui'}</span>`;
+    attHtml = `<div class="dnote">${d.headers_available ? 'Tidak diketahui (blob terlalu besar untuk dianalisis).' : 'Tidak diketahui.'}</div>`;
   } else if (!d.attachments.length) {
-    att = '<span class="detail-muted">Tidak ada lampiran</span>';
+    attHtml = `<div class="dnote">Tidak ada lampiran.</div>`;
   } else {
-    att = `<table class="mini-table">
-      <thead><tr><th>Nama file</th><th>Tipe</th><th class="num">Ukuran</th></tr></thead>
-      <tbody>${d.attachments.map(a => `
-        <tr><td>${esc(a.name)}${a.inline ? ' <span class="kind-badge kind-inline">INLINE</span>' : ''}</td>
-            <td class="detail-muted">${esc(a.type)}</td>
-            <td class="num">${fmtBytes(a.size)}</td></tr>`).join('')}
-      </tbody></table>`;
+    attHtml = `
+      <div class="dsummary"><b>${d.att_count}</b> file · total <b>${fmtBytes(d.att_total)}</b></div>
+      <div class="mini-wrap"><table class="mini-table">
+        <colgroup><col><col style="width:30%"><col style="width:92px"></colgroup>
+        <thead><tr><th>Nama file</th><th>Tipe</th><th class="num">Ukuran</th></tr></thead>
+        <tbody>${d.attachments.map(a => `
+          <tr><td class="wrap">${esc(a.name)}${a.inline ? ' <span class="kind-badge kind-inline">INLINE</span>' : ''}</td>
+              <td class="wrap dmuted">${esc(a.type)}</td>
+              <td class="num">${fmtBytes(a.size)}</td></tr>`).join('')}
+        </tbody></table></div>`;
   }
-  const attTitle = d.att_count ? `LAMPIRAN (${d.att_count} file · total ${fmtBytes(d.att_total)})` : 'LAMPIRAN';
-  html += `<div class="detail-section"><div class="detail-label">${attTitle}</div><div class="detail-value">${att}</div></div>`;
 
-  // Semua penerima envelope
+  // Pengiriman (envelope)
   const kindBadge = (k) => k === 'to' ? '<span class="kind-badge kind-to">TO</span>'
     : k === 'cc' ? '<span class="kind-badge kind-cc">CC</span>'
     : k === 'bcc' ? '<span class="kind-badge kind-bcc" title="Tidak tercantum di header To/Cc: BCC, alias, atau anggota distribution list">BCC/ALIAS</span>'
-    : '';
+    : '<span class="dmuted">—</span>';
   const rec = d.recipients || [];
-  html += `<div class="detail-section">
-    <div class="detail-label">SEMUA PENERIMA (ENVELOPE) · ${rec.length}</div>
-    <div class="detail-value">${rec.length ? `<table class="mini-table">
-      <thead><tr><th>Penerima</th><th>Jenis</th><th>Status</th><th>Waktu</th></tr></thead>
-      <tbody>${rec.map(r => `<tr><td>${esc(r.recipient)}</td><td>${kindBadge(r.kind)}</td>
-        <td>${statusBadge(r.status)}</td><td class="detail-muted">${esc(r.timestamp)}</td></tr>`).join('')}
-      </tbody></table>` : '<span class="detail-muted">—</span>'}</div>
-  </div>`;
+  const cnt = (s) => rec.filter(r => r.status === s).length;
+  const statusSummary = ['delivered', 'sent', 'deferred', 'bounced'].filter(s => cnt(s))
+    .map(s => `${statusBadge(s)} <b>${cnt(s)}</b>`).join('<span class="sep"></span>');
+  const deliveryHtml = rec.length ? `
+      <div class="dsummary">${rec.length} penerima${statusSummary ? '<span class="sep"></span>' + statusSummary : ''}</div>
+      <div class="mini-wrap"><table class="mini-table">
+        <colgroup><col><col style="width:86px"><col style="width:104px"><col style="width:146px"></colgroup>
+        <thead><tr><th>Penerima</th><th>Jenis</th><th>Status</th><th>Waktu</th></tr></thead>
+        <tbody>${rec.map(r => `<tr>
+          <td class="wrap">${esc(r.recipient)}${r.reason ? `<div class="row-reason">${esc(r.reason)}</div>` : ''}</td>
+          <td>${kindBadge(r.kind)}</td><td>${statusBadge(r.status)}</td>
+          <td class="dmuted nowrap">${esc(r.timestamp)}</td></tr>`).join('')}
+        </tbody></table></div>`
+    : `<div class="dnote">Tidak ada data pengiriman.</div>`;
 
-  box.innerHTML = html;
+  box.innerHTML =
+    dSection('Penerima (header)', recipientsHtml) +
+    dSection(`Lampiran`, attHtml) +
+    dSection('Pengiriman (envelope)', deliveryHtml);
 }
 
 // ── ZMT Doctor ─────────────────────────────────────────────

@@ -34,7 +34,7 @@ def _addresses(values):
         addr = (addr or "").strip()
         if not addr and not name:
             continue
-        name = (name or "").strip()
+        name = (name or "").strip().strip("'\"").strip()
         out.append(f"{name} <{addr}>" if name and addr and name != addr else (addr or name))
     return out
 
